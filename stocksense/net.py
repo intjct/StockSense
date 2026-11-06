@@ -44,7 +44,7 @@ def friendly(source: str, status: int | None, body: str = "") -> SourceError:
         if "undeclared" in low or "automated tool" in low:
             return SourceError("other", f"{name}ไม่รับรู้ว่าโปรแกรมนี้คือใคร (รหัส {status}) แจ้งผู้สร้างโปรแกรมได้เลย", source)
         if "rate" in low and ("threshold" in low or "limit" in low):
-            return SourceError("other", f"{name}บล็อกชั่วคราวเพราะขอข้อมูลถี่เกินไป (รหัส {status}) รอประมาณ 10 นาทีแล้วลองใหม่", source)
+            return SourceError("other", f"{name}บล็อกชั่วคราวเพราะขอข้อมูลถี่เกินไป (รหัส {status}) รอประมาณ 15 นาทีแล้วลองใหม่", source)
         return SourceError("other", f"{name}ไม่ยอมให้ดึงข้อมูลตอนนี้ (รหัส {status}) ลองใหม่อีกครั้งภายหลัง", source)
     if status == 400 and source == "gemini" and "key" in low:
         return SourceError("key", f"คีย์ของ{name}ใช้ไม่ได้ ลองเช็กในหน้าตั้งค่า", source)
@@ -61,6 +61,8 @@ class Http:
         self.transport = transport or self._requests
         self._session = requests.Session()
         self.last_sec = 0.0
+        self._sec_lock = threading.Lock()
+        self._block_file = os.path.join(config_dir(), "sec_block.txt")
 
     def _requests(self, method, url, headers, params, json_body, timeout):
         try:
@@ -74,15 +76,42 @@ class Http:
              timeout: float = 25) -> str:
         h = {"User-Agent": UA_SEC if source == "sec" else UA_BROWSER, "Accept-Encoding": "gzip, deflate"}
         h.update(headers or {})
-        if source == "sec":                       # SEC allows 10 requests a second; stay well below
-            wait = 0.15 - (time.time() - self.last_sec)
-            if wait > 0:
-                time.sleep(wait)
-            self.last_sec = time.time()
+        if source == "sec":
+            left = self.sec_block_left()
+            if left > 0:                          # SEC blocked us: stay quiet, more requests only extend the block
+                raise SourceError("other", f"{NAMES['sec']}ยังบล็อกอยู่ (ขอข้อมูลถี่เกินไป) โปรแกรมหยุดขอให้แล้ว "
+                                           f"รออีกประมาณ {int(left // 60) + 1} นาทีแล้วลองใหม่", "sec")
+            with self._sec_lock:                  # SEC allows 10 requests a second in total; stay well below
+                wait = 0.3 - (time.time() - self.last_sec)
+                if wait > 0:
+                    time.sleep(wait)
+                self.last_sec = time.time()
         status, text = self.transport(method, url, h, params, json_body, timeout)
+        if source == "sec" and status in (403, 429):
+            self._sec_block(15 * 60)
         if status is None or status >= 300:
             raise friendly(source, status, text)
         return text
+
+    def sec_block_left(self) -> float:
+        """Seconds still to wait before asking SEC again (kept in a file, so restarting the app doesn't skip it)."""
+        until = getattr(self, "_sec_until", None)
+        if until is None:
+            try:
+                with open(self._block_file) as f:
+                    until = float(f.read().strip())
+            except (OSError, ValueError):
+                until = 0.0
+            self._sec_until = until
+        return max(0.0, until - time.time())
+
+    def _sec_block(self, seconds: float) -> None:
+        self._sec_until = time.time() + seconds
+        try:
+            with open(self._block_file, "w") as f:
+                f.write(str(self._sec_until))
+        except OSError:
+            pass
 
     def get_json(self, source: str, url: str, **kw):
         text = self.call(source, "GET", url, **kw)

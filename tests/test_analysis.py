@@ -277,4 +277,27 @@ def test_sec_refusal_message_says_why():
     a = friendly("sec", 403, "Your Request Originates from an Undeclared Automated Tool")
     b = friendly("sec", 403, "Request Rate Threshold Exceeded")
     c = friendly("sec", 403, "")
-    assert "ไม่รับรู้" in a.th and "10 นาที" in b.th and "403" in c.th
+    assert "ไม่รับรู้" in a.th and "15 นาที" in b.th and "403" in c.th
+
+
+def test_sec_block_stops_further_requests_and_survives_restart():
+    calls = []
+
+    def transport(method, url, headers, params, body, timeout):
+        calls.append(url)
+        return 403, "Request Rate Threshold Exceeded"
+
+    h = Http(transport)
+    with pytest.raises(SourceError) as e1:
+        h.get_json("sec", "https://data.sec.gov/x")
+    assert len(calls) == 1 and "403" in e1.value.th
+    with pytest.raises(SourceError) as e2:
+        h.get_json("sec", "https://data.sec.gov/y")
+    assert len(calls) == 1 and "นาที" in e2.value.th            # no second request while blocked
+    h2 = Http(transport)                                          # app restarted
+    with pytest.raises(SourceError):
+        h2.get_json("sec", "https://data.sec.gov/z")
+    assert len(calls) == 1
+    with pytest.raises(SourceError):                              # other sources are not held back
+        h.get_json("yahoo", "https://example.com")
+    assert len(calls) == 2
