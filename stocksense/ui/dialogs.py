@@ -1,9 +1,9 @@
 """Settings (keys, update) and add/edit a holding."""
 from __future__ import annotations
 
-from PySide6.QtCore import QDate, QUrl, Qt
+from PySide6.QtCore import QDate, QLocale, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QCompleter, QDateEdit, QDialog, QDoubleSpinBox, QLineEdit, QMessageBox, QVBoxLayout,
+from PySide6.QtWidgets import (QCompleter, QDialog, QHBoxLayout, QSpinBox, QWidget, QDoubleSpinBox, QLineEdit, QMessageBox, QVBoxLayout,
                                QWidget)
 
 from .. import VERSION
@@ -126,6 +126,48 @@ class SettingsDialog(QDialog):
         self.accept()
 
 
+class DateBoxes(QWidget):
+    """Day / month / year boxes with plain 0-9 digits and Gregorian year (ignores Windows Thai locale)."""
+
+    def __init__(self, start):
+        super().__init__()
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        eng = QLocale(QLocale.Language.English)
+        self.d, self.m, self.y = QSpinBox(), QSpinBox(), QSpinBox()
+        for box, lo, hi, w in ((self.d, 1, 31, 70), (self.m, 1, 12, 70), (self.y, 1990, 2100, 96)):
+            box.setLocale(eng)
+            box.setRange(lo, hi)
+            box.setGroupSeparatorShown(False)
+            box.setFont(theme.font(13))
+            box.setFixedWidth(w)
+            box.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            box.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+            box.setKeyboardTracking(False)
+        lay.addWidget(self.d)
+        lay.addWidget(label("/", 14))
+        lay.addWidget(self.m)
+        lay.addWidget(label("/", 14))
+        lay.addWidget(self.y)
+        today = button("วันนี้", "Ghost", 12)
+        today.clicked.connect(lambda: self.set_value(QDate.currentDate()))
+        lay.addWidget(today)
+        lay.addStretch(1)
+        self.set_value(start)
+
+    def set_value(self, qd):
+        self.y.setValue(qd.year())
+        self.m.setValue(qd.month())
+        self.d.setValue(qd.day())
+
+    def value(self):
+        """Always a real date: a day too big for the month (31 Feb) is pulled back to the month's last day."""
+        y, m = self.y.value(), self.m.value()
+        last = QDate(y, m, 1).daysInMonth()
+        return QDate(y, m, min(self.d.value(), last))
+
+
 class HoldingDialog(QDialog):
     def __init__(self, parent, completer_model=None, holding: dict | None = None, ticker: str = "", resolve=None):
         super().__init__(parent)
@@ -172,11 +214,9 @@ class HoldingDialog(QDialog):
         self.price.setValue(float(h.get("avg_price") or 0))
         self.price.setFont(theme.font(13))
         field("ราคาเฉลี่ยที่ซื้อ (ดอลลาร์ต่อหุ้น)", self.price, "ดูได้ในแอป Dime หน้าหุ้นตัวนั้น ช่อง “ราคาเฉลี่ย”")
-        self.date = QDateEdit(QDate.fromString(h["buy_date"], "yyyy-MM-dd") if h.get("buy_date") else QDate.currentDate())
-        self.date.setCalendarPopup(True)
-        self.date.setDisplayFormat("d MMM yyyy")
-        self.date.setFont(theme.font(13))
-        field("ซื้อครั้งแรกเมื่อ", self.date)
+        start = QDate.fromString(h["buy_date"], "yyyy-MM-dd") if h.get("buy_date") else QDate.currentDate()
+        self.date = DateBoxes(start)
+        field("ซื้อครั้งแรกเมื่อ (วัน / เดือน / ปี ค.ศ.)", self.date, "พิมพ์ตัวเลขได้เลย เช่น 15 / 3 / 2025 · ไม่แน่ใจวันที่ กดปุ่ม “วันนี้” ได้")
         self.reason = QLineEdit(h.get("reason") or "")
         self.reason.setPlaceholderText("เช่น เชื่อว่าธุรกิจ AI จะโตอีกหลายปี")
         self.reason.setFont(theme.font(13))
@@ -207,7 +247,7 @@ class HoldingDialog(QDialog):
             self.err.setText("ใส่ราคาเฉลี่ยที่ซื้อ")
             return
         self.result_holding = {"ticker": t, "shares": self.shares.value(), "avg_price": self.price.value(),
-                               "buy_date": self.date.date().toString("yyyy-MM-dd"), "reason": self.reason.text()}
+                               "buy_date": self.date.value().toString("yyyy-MM-dd"), "reason": self.reason.text()}
         self.accept()
 
     def _remove(self):

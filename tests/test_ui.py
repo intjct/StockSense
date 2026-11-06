@@ -85,3 +85,12 @@ def test_part_card_expands(app):
     assert c.more.isVisible()
     QTest.mouseClick(c, Qt.MouseButton.LeftButton)
     assert not c.more.isVisible()
+
+
+def test_holding_date_boxes_plain_digits(qtbot_app=None):
+    from PySide6.QtCore import QDate
+    from stocksense.ui.dialogs import DateBoxes
+    b = DateBoxes(QDate(2025, 3, 15))
+    assert (b.d.text(), b.m.text(), b.y.text()) == ("15", "3", "2025")
+    b.d.setValue(31); b.m.setValue(2); b.y.setValue(2025)
+    assert b.value() == QDate(2025, 2, 28)
