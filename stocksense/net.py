@@ -15,8 +15,8 @@ from .settings import config_dir
 
 UA_BROWSER = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/130.0 Safari/537.36")
-# SEC asks every program to say who it is.
-UA_SEC = f"StockSense/{VERSION} (personal investing tool; https://github.com/intjct/StockSense)"
+# SEC asks every program to say who it is: a name plus a contact email (only SEC sees this).
+UA_SEC = f"StockSense thisnott@gmail.com StockSense/{VERSION} (personal investing tool; https://github.com/intjct/StockSense)"
 
 
 class SourceError(Exception):

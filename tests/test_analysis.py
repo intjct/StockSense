@@ -265,3 +265,8 @@ def test_verify_people_rules():
     assert v([{**ok, "firm": "Other Firm"}], news)[0]["firm"] == ""   # firm not in text -> dropped
     assert v([{**ok, "view_th": ""}], news) == []
     assert v("junk", news) == [] and v(None, news) == []
+
+
+def test_sec_user_agent_names_program_and_contact():
+    from stocksense.net import UA_SEC
+    assert UA_SEC.startswith("StockSense ") and "@" in UA_SEC
