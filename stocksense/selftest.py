@@ -86,6 +86,17 @@ def selftest() -> int:
         return r["health"]
     check("latest statements", stmt)
 
+    def portfolio():
+        hs = [{"ticker": "NVDA", "shares": 5, "avg_price": 90, "buy_date": "2025-01-02"},
+              {"ticker": "VOO", "shares": 2, "avg_price": 300, "buy_date": "2025-06-01"}]
+        r = Analyzer(src).check_portfolio(hs, 35.0)
+        assert r["count"] == 2 and 0 <= r["health"] <= 100 and r["currency"] and r["headline"], r
+        res["portfolio"] = r
+        f = Analyzer(src).run("AAPL", "buy", None, 35.0, holdings=hs)["fit"]
+        assert f and f["amount"] == 500, f
+        return f"health {r['health']}%"
+    check("portfolio check", portfolio)
+
     def update_check():
         from . import updater
         assert updater.is_newer("1.0.1", "1.0.0") and not updater.is_newer("0.0.1", VERSION)
@@ -114,7 +125,7 @@ def selftest() -> int:
         pf.upsert({"ticker": "NVDA", "shares": 2, "avg_price": 90})
         w = MainWindow(s, pf, History(), http=Http(FakeInternet()), check_updates=False)
         w.show()
-        for k in ("buy", "sell", "stmt"):
+        for k in ("buy", "sell", "stmt", "portfolio"):
             if k in res:
                 w.show_result(res[k])
                 app.processEvents()

@@ -103,11 +103,11 @@ QPushButton#SideLink:hover {{ color: #FFFFFF; background: {css(SIDE_ROW)}; }}
 QFrame#Holding {{ background: transparent; border: 1px solid transparent; border-radius: 10px; }}
 QFrame#Holding:hover {{ background: {css(SIDE_ROW)}; }}
 QFrame#HoldingOn {{ background: {css(SIDE_ROW)}; border: 1px solid {css(LIME)}; border-radius: 10px; }}
-QLineEdit, QDoubleSpinBox, QDateEdit, QPlainTextEdit {{
+QLineEdit, QDoubleSpinBox, QSpinBox, QDateEdit, QPlainTextEdit {{
     background: {css(BG)}; border: 1px solid {css(LINE)}; border-radius: 10px; padding: 9px 12px;
     selection-background-color: {css(LIME)}; selection-color: {css(INK)};
 }}
-QLineEdit:focus, QDoubleSpinBox:focus, QDateEdit:focus, QPlainTextEdit:focus {{ border-color: {css(INK)}; }}
+QLineEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus, QDateEdit:focus, QPlainTextEdit:focus {{ border-color: {css(INK)}; }}
 QDateEdit::drop-down {{ border: none; width: 24px; }}
 QToolTip {{ background: {css(INK)}; color: #FFFFFF; border: none; padding: 8px 10px; border-radius: 8px; }}
 QListView {{ background: {css(BG)}; border: 1px solid {css(LINE)}; border-radius: 8px; padding: 4px; outline: none; }}

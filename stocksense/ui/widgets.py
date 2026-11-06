@@ -193,6 +193,43 @@ class MiniBars(QWidget):
                 p.drawText(QRectF(lx, bottom + 2, 48, lab_h), Qt.AlignmentFlag.AlignCenter, self.labels[i])
 
 
+class ExposureBars(QWidget):
+    """Horizontal bars: [(name, pct, tone)] - how much of the portfolio sits in each bet."""
+
+    def __init__(self, items: list[tuple], row_h: int = 26):
+        super().__init__()
+        self.items, self.row_h = items, row_h
+        self.setMinimumHeight(max(1, len(items)) * row_h)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def sizeHint(self):
+        return QSize(300, self.minimumHeight())
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        name_w, num_w = 64, 54
+        track = QRectF(name_w, 0, max(10, self.width() - name_w - num_w), 10)
+        hi = max([max(i[1] for i in self.items), 40]) if self.items else 40
+        for k, (name, pct, tone) in enumerate(self.items):
+            y = k * self.row_h
+            p.setPen(theme.INK)
+            p.setFont(theme.font(12, True))
+            p.drawText(QRectF(0, y, name_w - 6, self.row_h), Qt.AlignmentFlag.AlignVCenter, name)
+            bar_y = y + (self.row_h - 10) / 2
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(track.x(), bar_y, track.width(), 10), 5, 5)
+            p.fillPath(path, QColor("#EEF0E8"))
+            w = max(6.0, track.width() * min(pct, hi) / hi)
+            fill = QPainterPath()
+            fill.addRoundedRect(QRectF(track.x(), bar_y, w, 10), 5, 5)
+            p.fillPath(fill, {"good": theme.LIME, "mid": QColor("#F2B84B"), "bad": theme.BAD}.get(tone, theme.INK))
+            p.setPen(theme.INK)
+            p.setFont(theme.font(12))
+            p.drawText(QRectF(self.width() - num_w, y, num_w, self.row_h),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, f"{pct:.0f}%")
+
+
 class PriceLine(QWidget):
     """Last ~6 months of closes, with the floor (support) and ceiling (resistance) as dashed lines."""
 

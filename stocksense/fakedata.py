@@ -70,6 +70,10 @@ def _gemini(prompt: str) -> dict:
         n = sum(1 for ln in prompt.split("ข่าว:")[-1].splitlines() if ln.startswith("["))
         eff = ["good", "bad", "good", "good", "neutral"]
         out = {"news": [{"i": i, "effect": eff[i % 5], "line_th": TH_NEWS[i % 5]} for i in range(n)]}
+    elif "ผลตรวจพอร์ต" in prompt:
+        out = {"headline": "พอร์ตของคุณค่อนข้างแข็งแรง แต่ NVDA มีน้ำหนักค่อนข้างมาก และยังซ้อนอยู่ในกองทุนอีกชั้น",
+               "watch": ["NVDA เป็นสัดส่วนใหญ่ของพอร์ต ถ้าตกแรงพอร์ตจะได้รับผลมาก",
+                         "จับตาวันประกาศงบของ NVDA ที่ใกล้เข้ามา"]}
     elif '"overview"' in prompt:
         out = {"overview": "ไตรมาสล่าสุดขายได้มากขึ้น 40% จากปีก่อน กำไรโตตามกัน", "trend": "ดีขึ้นต่อเนื่อง 8 ไตรมาส",
                "segments": [{"name": "ชิปศูนย์ข้อมูล", "value": "$30 พันล้าน", "change": "โต 55%"},
@@ -108,6 +112,11 @@ class FakeInternet:
         if "finance.yahoo.com" in u.netloc:
             sym = p.rsplit("/", 1)[-1]
             if sym == "THB=X":
+                if params.get("period1"):
+                    t0 = int(params["period1"])
+                    ts = [t0 + i * 86400 for i in range(6)]
+                    return ok({"chart": {"result": [{"meta": {}, "timestamp": ts,
+                                                     "indicators": {"quote": [{"close": [32.5] * 6}]}}]}})
                 return ok({"chart": {"result": [{"meta": {"regularMarketPrice": 34.9}}]}})
             if sym in ("NVDA", "AAPL", "VOO", "MSFT"):
                 return ok(_chart(sym, 120 if sym == "NVDA" else 400 if sym == "VOO" else 200))

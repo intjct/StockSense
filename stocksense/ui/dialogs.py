@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QDate, QLocale, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QCompleter, QDialog, QHBoxLayout, QSpinBox, QWidget, QDoubleSpinBox, QLineEdit, QMessageBox, QVBoxLayout,
+from PySide6.QtWidgets import (QCompleter, QDialog, QHBoxLayout, QSpinBox, QDoubleSpinBox, QLineEdit, QMessageBox, QVBoxLayout,
                                QWidget)
 
 from .. import VERSION

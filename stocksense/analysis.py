@@ -10,6 +10,7 @@ import json
 import re
 
 from . import fundamentals as F
+from . import portfolio_check as PC
 from . import scoring as S
 from .net import DAY, SourceError
 from .sources import ETFS, Sources
@@ -119,7 +120,9 @@ class Analyzer:
         return out
 
     # ------------------------------------------------------------ buy / sell
-    def run(self, sym: str, mode: str = "buy", holding: dict | None = None, fx: float | None = None) -> dict:
+    def run(self, sym: str, mode: str = "buy", holding: dict | None = None, fx: float | None = None,
+            explain: bool = True, holdings: list | None = None) -> dict:
+        """holdings (buy only): the whole portfolio, so the result can say how the mix would change."""
         g = self.gather(sym)
         news = []
         try:
@@ -146,7 +149,7 @@ class Analyzer:
 
         pos = self._position(holding, price, fx) if holding else None
         flags = self._danger_flags(parts, news) if mode == "sell" else []
-        texts = self._explain(g, parts, news, score, label, mode, pos, flags)
+        texts = self._explain(g, parts, news, score, label, mode, pos, flags) if explain else {}
 
         cards = []
         for k in S.PARTS:
@@ -168,12 +171,171 @@ class Analyzer:
             "chart_closes": g["hist"]["closes"][-180:], "support": parts["chart"]["facts"].get("support"),
             "resistance": parts["chart"]["facts"].get("resistance"),
         }
+        if mode == "buy" and holdings:
+            result["fit"] = self.buy_fit(g["sym"], g["is_etf"], holdings)
         if g["is_etf"]:
             result["etf_note"] = ("นี่คือกองทุนรวมหุ้นหลายร้อยตัว ไม่มีงบการเงินของตัวเอง "
                                   + ("คนส่วนใหญ่ซื้อสะสมเรื่อยๆ ระยะยาว การรอจังหวะซื้อมักได้ผลไม่ต่างกันมาก"
                                      if mode == "buy" else
                                      "การขายเพราะตลาดลงชั่วคราวเป็นความผิดพลาดที่พบบ่อยที่สุด ถ้ายังถือยาวได้ มักไม่จำเป็นต้องขาย"))
         return result
+
+
+    # ------------------------------------------------------------ portfolio
+    FIT_AMOUNT = 500.0
+
+    def _values(self, holdings: list[dict], missing: list | None = None) -> list[dict]:
+        """[{ticker, value, is_etf}] using the latest prices (cached 20 min). Prices that fail are skipped."""
+        items = []
+        for h in holdings:
+            try:
+                price = self.src.price(h["ticker"])
+            except SourceError as e:
+                if missing is not None:
+                    missing.append(f"ราคา {h['ticker']}: {e.th}")
+                continue
+            items.append({"ticker": h["ticker"], "value": price * float(h.get("shares") or 0),
+                          "is_etf": h["ticker"] in ETFS, "price": price})
+        return items
+
+    def buy_fit(self, sym: str, is_etf: bool, holdings: list[dict]) -> dict | None:
+        """The "what if I buy $500 more" note on the buy result. Never blocks the main answer."""
+        try:
+            items = self._values(holdings)
+        except SourceError as e:
+            if e.kind == "key":
+                raise
+            return None
+        return PC.buy_fit(items, sym, is_etf, self.FIT_AMOUNT)
+
+    def check_portfolio(self, holdings: list[dict], fx: float | None) -> dict:
+        if not holdings:
+            raise SourceError("other", "ยังไม่มีหุ้นในพอร์ต กด “+ เพิ่มหุ้น” ทางซ้ายก่อน", "")
+        missing: list[str] = []
+        rows: list[dict] = []
+        n = len(holdings)
+        for i, h in enumerate(holdings, 1):
+            sym = h["ticker"]
+            self.progress(f"กำลังตรวจ {sym} ({i} จาก {n})…")
+            row = {"ticker": sym, "name": h.get("name") or sym, "shares": float(h.get("shares") or 0),
+                   "avg_price": float(h.get("avg_price") or 0), "is_etf": sym in ETFS, "score": None}
+            try:
+                r = self.run(sym, "sell", h, fx, explain=False)
+                row.update(price=r["price"], score=r["score"], label=r["label"], tone=r["tone"],
+                           headline=r["headline"], flags=r["flags"], next_earnings=r.get("next_earnings") or "",
+                           name=r["name"], is_etf=r["is_etf"])
+                missing += [f"{sym}: {m}" for m in r["missing"]]
+            except SourceError as e:
+                if e.kind == "key":
+                    raise
+                missing.append(f"{sym}: {e.th}")
+                try:
+                    row["price"] = self.src.price(sym)
+                except SourceError:
+                    row["price"] = None
+            if row.get("price") is not None:
+                row["value"] = row["price"] * row["shares"]
+                row["paid"] = row["avg_price"] * row["shares"]
+                row["pl_pct"] = S.pct(row["value"], row["paid"]) if row["paid"] else None
+                row["fx_buy"] = self._soft(missing, "ค่าเงินวันที่ซื้อ", lambda d=h.get("buy_date"): self.src.usd_thb_on(d), None) \
+                    if h.get("buy_date") else None
+            rows.append(row)
+        priced = [r for r in rows if r.get("value") is not None]
+        if not priced:
+            raise SourceError("other", "ดึงราคาหุ้นในพอร์ตไม่ได้เลย ลองใหม่อีกครั้งภายหลัง", "")
+
+        total = sum(r["value"] for r in priced)
+        paid = sum(r["paid"] for r in priced)
+        for r in priced:
+            r["weight"] = r["value"] / total * 100
+        scored = [r for r in priced if r["score"] is not None]
+        sw = sum(r["value"] for r in scored)
+        hold_score = sum((100 - r["score"]) * r["value"] for r in scored) / sw if sw else None
+
+        ex = PC.exposures([{"ticker": r["ticker"], "value": r["value"], "is_etf": r["is_etf"]} for r in priced])
+        all_bets = PC.bets(ex)
+        top = all_bets[0] if all_bets else None
+        top_pct = top["pct"] if top else 0.0
+        conc = PC.concentration_score(top_pct)
+        hs, hlabel, htone = PC.health(hold_score, conc)
+
+        today = dt.date.today()
+        soon = []
+        for r in priced:
+            d = r.get("next_earnings")
+            if not d or r["is_etf"]:
+                continue
+            try:
+                days = (dt.date.fromisoformat(d) - today).days
+            except ValueError:
+                continue
+            if 0 <= days <= 30:
+                soon.append({"ticker": r["ticker"], "date": d, "days": days, "weight": r["weight"]})
+        soon.sort(key=lambda x: x["days"])
+
+        ranking = sorted(priced, key=lambda r: (-(r["score"] if r["score"] is not None else -1), -r["weight"]))
+        res = {
+            "kind": "portfolio", "at": _now(), "total": total, "paid": paid, "pl": total - paid,
+            "pl_pct": S.pct(total, paid) if paid else None, "fx": fx, "total_thb": total * fx if fx else None,
+            "health": hs, "health_label": hlabel, "health_tone": htone,
+            "hold_score": None if hold_score is None else int(round(hold_score)), "conc_score": conc,
+            "top": top, "stress": PC.stress_loss(top_pct) if top else 0.0, "stress_drop": PC.STRESS_DROP,
+            "bets": all_bets[:6], "overlaps": PC.overlaps(all_bets), "ranking": ranking, "currency": PC.currency_split(priced, fx),
+            "earnings": soon, "missing": missing, "count": len(priced), "unpriced": n - len(priced),
+        }
+        res.update(self._portfolio_text(res))
+        return res
+
+    def _portfolio_text(self, r: dict) -> dict:
+        top = r["top"]
+        fallback_head = f"คะแนนสุขภาพพอร์ต {r['health']}% ({r['health_label']})"
+        if top and top["pct"] >= PC.WARN:
+            fallback_head += f" · {top['name']} มีน้ำหนักสูง {top['pct']:.0f}% ของพอร์ต"
+        watch = []
+        if top and top["pct"] >= PC.CALM + 5:
+            watch.append(f"{top['name']} คิดเป็น {top['pct']:.0f}% ของพอร์ต ถ้าตกไป {r['stress_drop']:.0f}% พอร์ตจะลดประมาณ {r['stress']:.0f}%")
+        for o in r["overlaps"][:2]:
+            watch.append(f"คุณถือ {o['name']} ตรงๆ และมีอยู่ในกองทุน {', '.join(o['etfs'])} ด้วย รวมแล้วเป็น {o['pct']:.0f}% ของพอร์ต")
+        for x in r["ranking"][:2]:
+            if x["score"] is not None and x["score"] >= 45:
+                watch.append(f"{x['ticker']}: {x['label']} ({x['score']}%)")
+        for e in r["earnings"][:2]:
+            watch.append(f"{e['ticker']} ประกาศงบอีก {e['days']} วัน ({e['date']})")
+        out = {"headline": fallback_head, "watch": watch[:4], "ai_ok": False}
+        facts = {"คะแนนสุขภาพ": r["health"], "สุขภาพหุ้นที่ถือ": r["hold_score"], "คะแนนการกระจาย": r["conc_score"],
+                 "ตัวที่หนักสุด": top and {"ชื่อ": top["name"], "เปอร์เซ็นต์ของพอร์ต": round(top["pct"], 1)},
+                 "ถ้าตัวหนักสุดตก 30% พอร์ตลดประมาณ": round(r["stress"], 1),
+                 "หุ้นเรียงจากน่ากังวลสุด": [{"หุ้น": x["ticker"], "น้ำหนัก": round(x["weight"], 1), "ป้ายขาย": x.get("label"),
+                                             "คะแนนขาย": x["score"], "ข้อสังเกต": x.get("headline")} for x in r["ranking"][:6]],
+                 "ประกาศงบใน 30 วัน": [f"{e['ticker']} {e['date']}" for e in r["earnings"]],
+                 "ถือซ้ำกับกองทุน": [f"{o['name']} รวม {o['pct']:.0f}%" for o in r["overlaps"]]}
+        prompt = f"""นี่คือผลตรวจพอร์ตหุ้นสหรัฐของผู้ใช้ โปรแกรมคิดคะแนนไว้แล้ว ห้ามเปลี่ยนตัวเลข
+{RULES}
+- ห้ามสั่งให้ซื้อหรือขายหุ้นตัวใด ให้บอกแค่จุดที่ควรจับตา
+
+ข้อมูล:
+{json.dumps(facts, ensure_ascii=False, default=str)}
+
+รูปแบบ JSON:
+{{"headline": "ประโยคเดียว สรุปภาพรวมพอร์ตว่าแข็งแรงหรือเสี่ยงตรงไหน",
+ "watch": ["สิ่งที่ควรจับตา 1 ประโยคต่อข้อ ไม่เกิน 4 ข้อ"]}}"""
+        self.progress("AI กำลังสรุปภาพรวมพอร์ต…")
+        try:
+            d = self.src.ask_ai(prompt)
+        except SourceError as e:
+            if e.kind == "key":
+                raise
+            r["missing"].append(f"คำอธิบายจาก AI: {e.th}")
+            return out
+        head = str(d.get("headline") or "").strip()
+        raw = d.get("watch") or []
+        w = [str(x).strip() for x in ([raw] if isinstance(raw, str) else raw) if str(x).strip()]
+        if head:
+            out["headline"] = head
+        if w:
+            out["watch"] = w[:4]
+        out["ai_ok"] = bool(head)
+        return out
 
     @staticmethod
     def _position(h: dict, price: float, fx: float | None) -> dict:

@@ -150,6 +150,25 @@ class Sources:
             return {"rate": v}
         return float(self.cache.remember("fx-usdthb", 6 * HOUR, make)["rate"])
 
+    def usd_thb_on(self, date: str) -> float | None:
+        """Baht per dollar on a past day (last trading day on or before it). None if Yahoo has no data."""
+        def make():
+            d0 = dt.date.fromisoformat(date)
+            t0 = int(dt.datetime.combine(d0 - dt.timedelta(days=6), dt.time(), dt.timezone.utc).timestamp())
+            t1 = int(dt.datetime.combine(d0 + dt.timedelta(days=2), dt.time(), dt.timezone.utc).timestamp())
+            d = self.http.get_json("yahoo", YAHOO_CHART.format(sym="THB=X"),
+                                   params={"period1": t0, "period2": t1, "interval": "1d"})
+            r = ((d.get("chart") or {}).get("result") or [{}])[0]
+            q = ((r.get("indicators") or {}).get("quote") or [{}])[0]
+            rows = [(to_date(t), c) for t, c in zip(r.get("timestamp") or [], q.get("close") or []) if c]
+            rows = [x for x in rows if x[0] <= date] or rows
+            return {"rate": float(rows[-1][1]) if rows else 0.0}
+        try:
+            v = float(self.cache.remember(f"fx-on-{date}", 365 * DAY, make)["rate"])
+        except (SourceError, ValueError, TypeError, KeyError):
+            return None
+        return v or None
+
     # ---- SEC
     def sec_tickers(self) -> dict:
         """TICKER -> {cik, name}"""

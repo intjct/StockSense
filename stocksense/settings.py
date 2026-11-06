@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from dataclasses import asdict, dataclass
 
 from . import APP_NAME, secure
@@ -33,7 +34,7 @@ def read_json(name: str, default):
 def write_json(name: str, data) -> None:
     path = os.path.join(config_dir(), name)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
+    tmp = f"{path}.{threading.get_ident()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     os.replace(tmp, path)

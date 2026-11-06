@@ -1,4 +1,4 @@
-"""Main window: black portfolio sidebar on the left, search + 3 buttons + results on the right."""
+"""Main window: black portfolio sidebar on the left, search + 4 buttons + results on the right."""
 from __future__ import annotations
 
 from PySide6.QtCore import QStringListModel, Qt, Signal
@@ -107,12 +107,13 @@ class MainWindow(QWidget):
         self.b_buy = button("วิเคราะห์ซื้อ", "Lime", 14, True)
         self.b_sell = button("วิเคราะห์ขาย", "Dark", 14)
         self.b_stmt = button("วิเคราะห์งบล่าสุด", "Outline", 14)
-        for b, kind in ((self.b_buy, "buy"), (self.b_sell, "sell"), (self.b_stmt, "statement")):
+        self.b_port = button("ตรวจพอร์ต", "Outline", 14)
+        for b, kind in ((self.b_buy, "buy"), (self.b_sell, "sell"), (self.b_stmt, "statement"), (self.b_port, "portfolio")):
             b.setMinimumHeight(44)
             b.clicked.connect(lambda _=False, k=kind: self.run(k))
         bl = QHBoxLayout()
         bl.setSpacing(8)
-        for b in (self.b_buy, self.b_sell, self.b_stmt):
+        for b in (self.b_buy, self.b_sell, self.b_stmt, self.b_port):
             bl.addWidget(b, 1)
         rl.addLayout(bl)
 
@@ -313,14 +314,14 @@ class MainWindow(QWidget):
 
     def _set_busy(self, on: bool):
         self.busy = on
-        for b in (self.b_buy, self.b_sell, self.b_stmt):
+        for b in (self.b_buy, self.b_sell, self.b_stmt, self.b_port):
             b.setEnabled(not on)
 
     def run(self, kind: str):
         if self.busy:
             return
-        sym = self.resolve(self.search.text())
-        if not sym:
+        sym = "" if kind == "portfolio" else self.resolve(self.search.text())
+        if kind != "portfolio" and not sym:
             self.search.setFocus()
             self.search.setPlaceholderText("พิมพ์ชื่อหุ้นก่อน แล้วค่อยกดปุ่ม")
             return
@@ -328,16 +329,24 @@ class MainWindow(QWidget):
             self._set_page(R.build_error("ต้องใส่คีย์ Gemini และ Finnhub ก่อน (ฟรีทั้งคู่) กดปุ่มด้านล่างแล้วทำตามขั้นตอน",
                                          True, self.open_settings, lambda: self.run(kind)))
             return
-        self.search.setText(sym)
-        self.s.last_ticker = sym
-        self.s.save()
+        if kind == "portfolio" and not self.pf.holdings:
+            self._set_page(R.build_error("ยังไม่มีหุ้นในพอร์ต กด “+ เพิ่มหุ้น” ทางซ้ายก่อน แล้วค่อยกดตรวจพอร์ต", False,
+                                         self.open_settings, lambda: self.add_holding()))
+            return
+        if kind != "portfolio":
+            self.search.setText(sym)
+            self.s.last_ticker = sym
+            self.s.save()
         titles = {"buy": f"กำลังวิเคราะห์ซื้อ {sym}", "sell": f"กำลังวิเคราะห์ขาย {sym}",
-                  "statement": f"กำลังอ่านงบล่าสุดของ {sym}"}
-        loading = R.Loading(titles[kind])
+                  "statement": f"กำลังอ่านงบล่าสุดของ {sym}", "portfolio": "กำลังตรวจพอร์ตของคุณ"}
+        note = ("ตรวจทีละตัว ถ้าถือหลายตัวอาจใช้เวลาประมาณ 1 นาที ครั้งต่อไปจะเร็วขึ้นเพราะโปรแกรมจำข้อมูลไว้"
+                if kind == "portfolio" else None)
+        loading = R.Loading(titles[kind], note) if note else R.Loading(titles[kind])
         self._set_page(loading)
         self._set_busy(True)
         src = self._sources()
-        holding = self.pf.get(sym)
+        holding = self.pf.get(sym) if sym else None
+        holdings = [dict(h) for h in self.pf.holdings]
 
         def work(progress):
             a = Analyzer(src, progress)
@@ -348,7 +357,10 @@ class MainWindow(QWidget):
                 fx = src.usd_thb()
             except SourceError:
                 pass
-            return a.run(sym, kind, holding if kind == "sell" else None, fx)
+            if kind == "portfolio":
+                return a.check_portfolio(holdings, fx)
+            return a.run(sym, kind, holding if kind == "sell" else None, fx,
+                         holdings=holdings if kind == "buy" else None)
 
         def done(res, err):
             self._set_busy(False)
@@ -362,10 +374,21 @@ class MainWindow(QWidget):
             self.show_result(res)
         run_in_background(work, done, loading.set_step)
 
+    def _open_sell(self, ticker: str):
+        self.select(ticker)
+        self.run("sell")
+
     def show_result(self, res: dict):
         self.last, self.last_kind = res, res["kind"]
         if res["kind"] == "statement":
             self._set_page(R.build_statement(res))
+            return
+        if res["kind"] == "portfolio":
+            for x in res["ranking"]:
+                if x.get("price") is not None:
+                    self.prices[x["ticker"]] = x["price"]
+            self.refresh_portfolio(fetch=False)
+            self._set_page(R.build_portfolio(res, self._open_sell))
             return
         self.hist.add(res)
         prev = self.hist.previous(res["sym"], res["kind"])

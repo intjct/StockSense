@@ -126,3 +126,70 @@ def test_scoring_rules():
     assert S.earnings([{"period": "a", "actual": 1, "estimate": 2}] * 4)["score"] < 30
     assert S.buy_label(70)[0] == "น่าซื้อ" and S.buy_label(54)[0] == "รอก่อน"
     assert S.sell_label(65)[0] == "น่าพิจารณาขาย"
+
+
+# ---------------------------------------------------------------- portfolio check
+
+def test_exposures_look_through_and_overlap():
+    from stocksense import portfolio_check as PC
+    items = [{"ticker": "NVDA", "value": 6000, "is_etf": False}, {"ticker": "VOO", "value": 4000, "is_etf": True}]
+    ex = PC.exposures(items)
+    b = PC.bets(ex)
+    nv = next(x for x in b if x["name"] == "NVDA")
+    assert round(nv["direct_pct"]) == 60 and round(nv["via_pct"], 1) == 3.2     # 4000 * 8% = 320 of 10000
+    assert round(nv["pct"], 1) == 63.2
+    assert [o["name"] for o in PC.overlaps(b)] == ["NVDA"]            # held directly AND inside the fund
+    assert PC.concentration_score(63.2) == 0 and PC.concentration_score(20) == 100 and PC.concentration_score(10) == 100
+    assert round(PC.stress_loss(63.2), 1) == 19.0
+
+
+def test_goog_counts_as_googl_and_spread_funds_are_not_a_bet():
+    from stocksense import portfolio_check as PC
+    b = PC.bets(PC.exposures([{"ticker": "GOOG", "value": 100, "is_etf": False},
+                              {"ticker": "GOOGL", "value": 100, "is_etf": False},
+                              {"ticker": "SCHD", "value": 800, "is_etf": True}]))
+    assert len(b) == 1 and b[0]["name"] == "GOOGL" and round(b[0]["pct"]) == 20
+
+
+def test_currency_split_adds_up():
+    from stocksense import portfolio_check as PC
+    rows = [{"value": 1100.0, "paid": 1000.0, "fx_buy": 32.0}, {"value": 500.0, "paid": 600.0, "fx_buy": 36.0},
+            {"value": 50.0, "paid": 40.0, "fx_buy": None}]
+    c = PC.currency_split(rows, 35.0)
+    assert round(c["stock_thb"] + c["currency_thb"], 6) == round(c["total_thb"], 6)
+    assert c["counted"] == 2 and c["skipped"] == 1
+    assert round(c["total_thb"]) == round((1100 + 500) * 35 - (1000 * 32 + 600 * 36))
+    assert PC.currency_split([{"value": 1, "paid": 1, "fx_buy": None}], 35.0) is None
+
+
+def test_buy_fit_warns_when_too_heavy():
+    from stocksense import portfolio_check as PC
+    items = [{"ticker": "NVDA", "value": 600, "is_etf": False}, {"ticker": "AAPL", "value": 400, "is_etf": False}]
+    f = PC.buy_fit(items, "NVDA", False, 500)
+    assert round(f["weight_before"]) == 60 and round(f["weight_after"]) == 73 and f["tone"] == "bad"
+    assert PC.buy_fit([], "NVDA", False, 500) is None
+    g = PC.buy_fit(items, "VOO", True, 500)
+    assert g["is_fund"] and g["top_after"]["name"] == "NVDA"
+
+
+def test_check_portfolio_end_to_end(src):
+    analyzer = Analyzer(src)
+    holdings = [{"ticker": "NVDA", "shares": 10, "avg_price": 90, "buy_date": "2025-01-02", "name": "NVIDIA"},
+                {"ticker": "VOO", "shares": 2, "avg_price": 300, "buy_date": "2025-06-01", "name": "S&P 500"},
+                {"ticker": "AAPL", "shares": 4, "avg_price": 150, "buy_date": "", "name": "Apple"}]
+    r = analyzer.check_portfolio(holdings, 35.0)
+    assert r["kind"] == "portfolio" and r["count"] == 3 and 0 <= r["health"] <= 100
+    assert abs(sum(x["weight"] for x in r["ranking"]) - 100) < 1e-6
+    scores = [x["score"] for x in r["ranking"]]
+    assert scores == sorted(scores, reverse=True)
+    assert r["currency"] and r["currency"]["counted"] == 2 and r["currency"]["skipped"] == 1
+    assert r["headline"] and r["top"]
+
+
+def test_check_portfolio_empty_and_buy_fit_in_buy(src):
+    analyzer = Analyzer(src)
+    with pytest.raises(SourceError):
+        analyzer.check_portfolio([], 35.0)
+    r = analyzer.run("NVDA", "buy", None, 35.0, holdings=[{"ticker": "AAPL", "shares": 5, "avg_price": 100}])
+    assert r["fit"] and r["fit"]["amount"] == 500 and r["fit"]["weight_before"] == 0
+    assert "fit" not in analyzer.run("NVDA", "buy", None, 35.0)       # no portfolio given -> no note

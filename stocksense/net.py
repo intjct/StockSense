@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
 
 import requests
@@ -121,7 +122,7 @@ class Cache:
 
     def put(self, key: str, value) -> None:
         p = self._path(key)
-        tmp = p + ".tmp"
+        tmp = f"{p}.{threading.get_ident()}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(value, f, ensure_ascii=False)
         os.replace(tmp, p)

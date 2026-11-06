@@ -7,7 +7,9 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QProgressBar, QVBoxLayout, QWidget
 
 from . import theme
-from .widgets import (MiniBars, PriceLine, Ring, baht, big_money, button, card, help_mark, label, money, pill, row,
+from .. import portfolio_check as PC
+from ..scoring import part_tone
+from .widgets import (ExposureBars, MiniBars, PriceLine, Ring, baht, big_money, button, card, help_mark, label, money, pill, row,
                       signed_pct)
 
 DISCLAIMER = "ข้อมูลนี้ช่วยประกอบการตัดสินใจเท่านั้น ไม่ใช่คำแนะนำการลงทุน · % คือสัดส่วนสัญญาณที่บอกว่าน่าซื้อหรือน่าขาย ไม่ใช่โอกาสได้กำไร"
@@ -203,6 +205,9 @@ def build_trade(r: dict, prev: dict | None = None, on_add_holding=None) -> QWidg
     if r.get("conflict"):
         page.addWidget(label("ข้อมูลขัดกัน: " + r["conflict"], 13, name="Warn", wrap=True))
 
+    if r["kind"] == "buy" and r.get("fit"):
+        _fit_section(page, r)
+
     # six parts
     grid = QGridLayout()
     grid.setSpacing(10)
@@ -250,6 +255,155 @@ def build_trade(r: dict, prev: dict | None = None, on_add_holding=None) -> QWidg
     if extra:
         page.addWidget(label("\n".join(extra), 13, name="Note", wrap=True))
     _footer(page, r.get("missing") or [])
+    page.addStretch(1)
+    return w
+
+
+def _fit_section(page: QVBoxLayout, r: dict):
+    """Buy page: how the portfolio mix would change if the person adds $500."""
+    f = r["fit"]
+    f_, l = _section("ถ้าซื้อเพิ่มในพอร์ตของคุณ", "คำนวณจากพอร์ตที่คุณเพิ่มไว้ทางซ้าย โดยสมมติว่าซื้อเพิ่มตามจำนวนที่ระบุ ไม่ได้แปลว่าควรซื้อเท่านี้")
+    sym = r["sym"]
+    amt = f"${f['amount']:,.0f}"
+    held = f["held_value"]
+    if f["is_fund"] and f["top_after"]:
+        top = f["top_after"]
+        line = (f"ถ้าซื้อ {sym} เพิ่ม {amt} หุ้นที่จะมีน้ำหนักสูงสุดในพอร์ตคือ {top['name']} "
+                f"ประมาณ {top['pct']:.0f}% (รวมที่ซ่อนอยู่ในกองทุน)")
+    else:
+        before, after = f["weight_before"], f["weight_after"]
+        line = (f"ตอนนี้ {sym} คิดเป็น {before:.0f}% ของพอร์ต" if held > 0 or before > 0 else f"ตอนนี้คุณยังไม่ได้ถือ {sym}")
+        line += f" · ถ้าซื้อเพิ่ม {amt} จะเป็น {after:.0f}%"
+        if f["via_funds"]:
+            line += f" (นับรวมที่ซ่อนอยู่ในกองทุน {', '.join(f['via_funds'])} ที่คุณถืออยู่)"
+    tone = f["tone"]
+    msg = {"bad": f"สูงเกิน {PC.WARN:.0f}% ของพอร์ต ถ้าตัวนี้ตกแรง พอร์ตจะได้รับผลมาก",
+           "mid": f"เริ่มสูง (เกิน {PC.CALM + 5:.0f}% ของพอร์ต) ควรจับตาน้ำหนักของตัวนี้",
+           "good": "ยังอยู่ในระดับที่พอร์ตกระจายความเสี่ยงได้"}[tone]
+    l.addWidget(label(line, 13, wrap=True))
+    l.addWidget(label(msg, 13, True, wrap=True, color=theme.TONE_FG[tone]))
+    page.addWidget(f_)
+
+
+
+# ---------------------------------------------------------------- whole portfolio
+
+def build_portfolio(r: dict, on_open=None) -> QWidget:
+    """on_open(ticker) opens the sell analysis of one holding."""
+    w = QWidget()
+    w.setObjectName("Page")
+    page = QVBoxLayout(w)
+    page.setContentsMargins(0, 4, 0, 16)
+    page.setSpacing(12)
+
+    head = QHBoxLayout()
+    head.setSpacing(16)
+    ring_color = {"good": theme.INK, "mid": theme.MID, "bad": theme.BAD}[r["health_tone"]]
+    head.addWidget(Ring(r["health"], 104, ring_color), 0, Qt.AlignmentFlag.AlignTop)
+    col = QVBoxLayout()
+    col.setSpacing(4)
+    tone = "lime" if r["health_tone"] == "good" else r["health_tone"]
+    col.addLayout(row(pill(r["health_label"], tone), label("คะแนนสุขภาพพอร์ต", 12, name="Soft"), None, spacing=8))
+    col.addWidget(label(f"พอร์ตของคุณ · {r['count']} รายการ", 19, True))
+    money_line = [label(money(r["total"]), 14, True)]
+    if r.get("total_thb"):
+        money_line.append(label(f"≈ {baht(r['total_thb'])}", 12, name="Soft"))
+    if r.get("pl_pct") is not None:
+        money_line.append(label(f"{signed_pct(r['pl_pct'])} ตั้งแต่ซื้อ", 12,
+                                color=theme.GOOD if r["pl"] >= 0 else theme.BAD))
+    col.addLayout(row(*money_line, None, spacing=10))
+    col.addWidget(label(r["headline"], 14, wrap=True))
+    col.addWidget(label(f"ตรวจเมื่อ {r['at']}", 11, name="Faint"))
+    head.addLayout(col, 1)
+    page.addLayout(head)
+
+    grid = QGridLayout()
+    grid.setSpacing(10)
+    hs, cs = r["hold_score"], r["conc_score"]
+    grid.addWidget(_metric("สุขภาพของหุ้นที่ถืออยู่", "–" if hs is None else f"{hs}/100",
+                           "จากคะแนนวิเคราะห์ขายของแต่ละตัว ถ่วงตามขนาดที่ถือ",
+                           None if hs is None else part_tone(hs)), 0, 0)
+    grid.addWidget(_metric("การกระจายความเสี่ยง", f"{cs}/100", "ยิ่งไม่กองอยู่ที่ตัวเดียว ยิ่งสูง",
+                           part_tone(cs)), 0, 1)
+    grid.setColumnStretch(0, 1)
+    grid.setColumnStretch(1, 1)
+    page.addLayout(grid)
+
+    # concentration
+    if r.get("bets"):
+        f, l = _section("เงินของคุณกองอยู่ที่ไหนบ้าง",
+                        "นับรวมหุ้นที่ซ่อนอยู่ในกองทุน เช่น ถือ VOO ก็คือถือ NVDA ราว 8% ของกองทุนนั้นด้วย (ตัวเลขในกองทุนเป็นค่าประมาณ)")
+        l.addWidget(ExposureBars([(b["name"], b["pct"], PC.conc_tone(b["pct"])) for b in r["bets"]]))
+        top = r["top"]
+        if top:
+            l.addWidget(label(f"ถ้า {top['name']} ตกลง {r['stress_drop']:.0f}% พอร์ตทั้งก้อนจะลดลงประมาณ {r['stress']:.0f}%", 13,
+                              wrap=True))
+        for o in r["overlaps"]:
+            l.addWidget(label(f"{o['name']}: ถือตรง {o['direct_pct']:.0f}% + ซ่อนอยู่ในกองทุน {', '.join(o['etfs'])} อีก "
+                              f"{o['via_pct']:.0f}% = รวม {o['pct']:.0f}% ของพอร์ต", 12, name="Note", wrap=True))
+        page.addWidget(f)
+
+    # ranking
+    f, l = _section("เรียงจากน่ากังวลที่สุดไปน้อยที่สุด", "ใช้คะแนนเดียวกับปุ่มวิเคราะห์ขาย ตัวที่คะแนนสูงคือมีสัญญาณให้ทบทวนมาก")
+    for x in r["ranking"]:
+        line = QHBoxLayout()
+        line.setSpacing(10)
+        t = label(x["ticker"], 14, True)
+        t.setFixedWidth(58)
+        line.addWidget(t, 0, Qt.AlignmentFlag.AlignTop)
+        mid = QVBoxLayout()
+        mid.setSpacing(1)
+        top_row = [label(f"{x['weight']:.0f}% ของพอร์ต", 12, name="Soft")]
+        if x.get("pl_pct") is not None:
+            top_row.append(label(f"{signed_pct(x['pl_pct'])} จากที่ซื้อ", 12,
+                                 color=theme.GOOD if x["pl_pct"] >= 0 else theme.BAD))
+        mid.addLayout(row(*top_row, None, spacing=10))
+        mid.addWidget(label(x.get("headline") or "ตรวจข้อมูลของตัวนี้ไม่ได้ในรอบนี้", 12, name="Soft", wrap=True))
+        line.addLayout(mid, 1)
+        if x["score"] is not None:
+            line.addWidget(pill(f"{x['label']} {x['score']}%", x["tone"], 11), 0, Qt.AlignmentFlag.AlignTop)
+        else:
+            line.addWidget(pill("ตรวจไม่ได้", "none", 11), 0, Qt.AlignmentFlag.AlignTop)
+        if on_open:
+            b = button("ดูละเอียด", "Ghost", 11)
+            b.clicked.connect(lambda _=False, tk=x["ticker"]: on_open(tk))
+            line.addWidget(b, 0, Qt.AlignmentFlag.AlignTop)
+        l.addLayout(line)
+    page.addWidget(f)
+
+    # currency
+    cur = r.get("currency")
+    if cur:
+        f, l = _section("กำไรขาดทุนเป็นเงินบาท มาจากอะไร",
+                        "เทียบอัตราแลกเปลี่ยนวันที่ซื้อกับวันนี้ ถ้าบาทอ่อนลง หุ้นเท่าเดิมก็ได้เงินบาทมากขึ้น ถ้าบาทแข็งขึ้นจะได้น้อยลง")
+        g = QGridLayout()
+        g.setSpacing(8)
+        g.addWidget(_metric("รวมทั้งหมด", baht(cur["total_thb"]), "ราคาหุ้น + ค่าเงิน", "good" if cur["total_thb"] >= 0 else "bad"), 0, 0)
+        g.addWidget(_metric("มาจากราคาหุ้น", baht(cur["stock_thb"]), "ถ้าค่าเงินไม่เปลี่ยน", "good" if cur["stock_thb"] >= 0 else "bad"), 0, 1)
+        g.addWidget(_metric("มาจากค่าเงินบาท", baht(cur["currency_thb"]),
+                            "บาทอ่อนลง ช่วยเรา" if cur["currency_thb"] >= 0 else "บาทแข็งขึ้น หักออก",
+                            "good" if cur["currency_thb"] >= 0 else "bad"), 0, 2)
+        l.addLayout(g)
+        if cur["skipped"]:
+            l.addWidget(label(f"ไม่นับ {cur['skipped']} รายการที่หาอัตราแลกเปลี่ยนวันที่ซื้อไม่ได้", 11, name="Faint"))
+        page.addWidget(f)
+
+    # earnings soon
+    f, l = _section("ประกาศงบเร็วๆ นี้ (ภายใน 30 วัน)", "ช่วงประกาศงบ ราคาหุ้นมักแกว่งแรงกว่าปกติ")
+    if r["earnings"]:
+        for e in r["earnings"]:
+            l.addLayout(row(label(e["ticker"], 13, True), label(f"{e['date']}", 13), label(f"อีก {e['days']} วัน", 12, name="Soft"),
+                            None, label(f"{e['weight']:.0f}% ของพอร์ต", 12, name="Soft"), spacing=14))
+    else:
+        l.addWidget(label("ไม่มีหุ้นตัวไหนในพอร์ตประกาศงบภายใน 30 วันนี้", 13, name="Soft"))
+    page.addWidget(f)
+
+    if r.get("watch"):
+        page.addWidget(label("สิ่งที่ควรจับตา\n• " + "\n• ".join(r["watch"]), 13, name="Note", wrap=True))
+    missing = list(r.get("missing") or [])
+    if r.get("unpriced"):
+        missing.insert(0, f"ดึงราคาไม่ได้ {r['unpriced']} รายการ จึงไม่นับในพอร์ต")
+    _footer(page, missing)
     page.addStretch(1)
     return w
 
@@ -404,7 +558,7 @@ def build_empty(keys_ready: bool, on_settings) -> QWidget:
 
 
 class Loading(QWidget):
-    def __init__(self, title: str):
+    def __init__(self, title: str, note: str = "ครั้งแรกอาจใช้เวลา 20–40 วินาที ครั้งต่อไปจะเร็วขึ้น เพราะโปรแกรมจำข้อมูลไว้"):
         super().__init__()
         self.setObjectName("Page")
         page = QVBoxLayout(self)
@@ -420,7 +574,7 @@ class Loading(QWidget):
         bar.setStyleSheet(f"QProgressBar{{background:{theme.SOFT.name()};border:none;border-radius:2px;}}"
                           f"QProgressBar::chunk{{background:{theme.INK.name()};border-radius:2px;}}")
         page.addWidget(bar)
-        page.addWidget(label("ครั้งแรกอาจใช้เวลา 20–40 วินาที ครั้งต่อไปจะเร็วขึ้น เพราะโปรแกรมจำข้อมูลไว้", 12, name="Faint", wrap=True))
+        page.addWidget(label(note, 12, name="Faint", wrap=True))
         page.addStretch(1)
         self.steps: list[str] = []
 

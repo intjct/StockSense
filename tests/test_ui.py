@@ -94,3 +94,27 @@ def test_holding_date_boxes_plain_digits(qtbot_app=None):
     assert (b.d.text(), b.m.text(), b.y.text()) == ("15", "3", "2025")
     b.d.setValue(31); b.m.setValue(2); b.y.setValue(2025)
     assert b.value() == QDate(2025, 2, 28)
+
+
+def test_portfolio_button_and_buy_note(app):
+    w = _win()
+    w.pf.upsert({"ticker": "VOO", "shares": 2, "avg_price": 300, "buy_date": "2025-06-01"})
+    w.show()
+    w.b_port.click()
+    assert w.busy and not w.b_port.isEnabled()
+    _wait(app, lambda: not w.busy)
+    assert w.last_kind == "portfolio" and w.last["count"] == 2
+    assert w.last["ranking"][0]["ticker"] in ("NVDA", "VOO")
+    w.search.setText("AAPL")
+    w.b_buy.click()
+    _wait(app, lambda: not w.busy)
+    assert w.last_kind == "buy" and w.last["fit"] and w.last["fit"]["amount"] == 500
+
+
+def test_portfolio_button_empty_portfolio(app):
+    from stocksense.ui.mainwindow import MainWindow
+    s = Settings()
+    s.gemini_key, s.finnhub_key = "g", "f"
+    w = MainWindow(s, Portfolio(), History(), http=Http(FakeInternet()), check_updates=False)
+    w.run("portfolio")
+    assert not w.busy and w.last is None
