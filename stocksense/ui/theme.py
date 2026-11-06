@@ -98,6 +98,10 @@ QPushButton#Link {{ background: transparent; border: none; color: {css(TEXT_SOFT
 QPushButton#Link:hover {{ color: {css(INK)}; text-decoration: underline; }}
 QPushButton#SideAdd {{ background: transparent; color: #CFCFCF; border: 1px dashed #555555; border-radius: 10px; padding: 9px; }}
 QPushButton#SideAdd:hover {{ color: #FFFFFF; border-color: {css(LIME)}; }}
+QPushButton#SideAlert {{ background: #3A1713; color: #FF8F80; border: 1px solid #6B2A22; border-radius: 10px; padding: 8px 10px; text-align: left; }}
+QPushButton#SideAlert:hover {{ background: #4A1D18; color: #FFFFFF; }}
+QPushButton#SideNear {{ background: #2E2410; color: #F2B84B; border: 1px solid #55421A; border-radius: 10px; padding: 8px 10px; text-align: left; }}
+QPushButton#SideNear:hover {{ background: #3B2E12; color: #FFFFFF; }}
 QPushButton#SideLink {{ background: transparent; color: {css(SIDE_SOFT)}; border: none; border-radius: 8px; padding: 8px 10px; text-align: left; }}
 QPushButton#SideLink:hover {{ color: #FFFFFF; background: {css(SIDE_ROW)}; }}
 QFrame#Holding {{ background: transparent; border: 1px solid transparent; border-radius: 10px; }}

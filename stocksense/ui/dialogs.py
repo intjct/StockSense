@@ -3,14 +3,15 @@ from __future__ import annotations
 
 from PySide6.QtCore import QDate, QLocale, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QCompleter, QDialog, QHBoxLayout, QSpinBox, QDoubleSpinBox, QLineEdit, QMessageBox, QVBoxLayout,
+from PySide6.QtWidgets import (QCheckBox, QCompleter, QDialog, QHBoxLayout, QMenu, QSpinBox, QDoubleSpinBox, QLineEdit, QMessageBox, QVBoxLayout,
                                QWidget)
 
 from .. import VERSION
+from .. import rules as RL
 from ..net import Cache, Http, SourceError
 from ..sources import Sources
 from . import theme
-from .widgets import button, card, label, row, run_in_background
+from .widgets import button, card, clear, label, row, run_in_background
 
 
 def ask(parent, title: str, text: str, yes: str, no: str = "ยกเลิก") -> bool:
@@ -166,6 +167,91 @@ class DateBoxes(QWidget):
         y, m = self.y.value(), self.m.value()
         last = QDate(y, m, 1).daysInMonth()
         return QDate(y, m, min(self.d.value(), last))
+
+
+class RulesDialog(QDialog):
+    """Edit the เงื่อนไขเปลี่ยนใจ of one holding: tick on/off, change the number, remove, add."""
+
+    def __init__(self, parent, ticker: str, rules: list[dict], price: float | None = None):
+        super().__init__(parent)
+        self.ticker, self.price = ticker, price
+        self.rules = [dict(r) for r in RL.clean(rules)]
+        self.result_rules: list[dict] | None = None
+        self.setWindowTitle(f"เงื่อนไขเปลี่ยนใจของ {ticker}")
+        self.setMinimumWidth(500)
+        self.setStyleSheet(theme.STYLE)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 18)
+        lay.setSpacing(8)
+        lay.addWidget(label(f"เงื่อนไขเปลี่ยนใจของ {ticker}", 18, True))
+        lay.addWidget(label("ตั้งไว้ตอนใจเย็นว่า ถ้าเกิดเรื่องไหนขึ้น จะกลับมาทบทวนว่าควรถือต่อไหม "
+                            "โปรแกรมเช็กทุกครั้งที่เปิดและเตือนที่แถบซ้าย ไม่ได้ขายให้เอง", 12, name="Soft", wrap=True))
+        self.body = QVBoxLayout()
+        self.body.setSpacing(6)
+        lay.addLayout(self.body)
+        self.add_btn = button("+ เพิ่มเงื่อนไข", "Ghost", 12)
+        self.add_btn.clicked.connect(self._add_menu)
+        lay.addLayout(row(self.add_btn, None))
+        save = button("บันทึก", "Lime", 13, True)
+        save.clicked.connect(self._save)
+        cancel = button("ยกเลิก", "Ghost", 13)
+        cancel.clicked.connect(self.reject)
+        lay.addSpacing(6)
+        lay.addLayout(row(None, cancel, save))
+        self._render()
+
+    def _render(self):
+        clear(self.body)
+        if not self.rules:
+            self.body.addWidget(label("ยังไม่มีเงื่อนไข กด “+ เพิ่มเงื่อนไข” ด้านล่าง", 13, name="Faint"))
+        for i, r in enumerate(self.rules):
+            k = RL.KINDS[r["kind"]]
+            line = QHBoxLayout()
+            line.setSpacing(8)
+            chk = QCheckBox(k["title"])
+            chk.setFont(theme.font(13))
+            chk.setChecked(r["on"])
+            chk.toggled.connect(lambda on, rr=r: rr.__setitem__("on", on))
+            line.addWidget(chk, 1)
+            if k["unit"]:
+                sp = QDoubleSpinBox()
+                sp.setDecimals(2 if k["unit"] == "$" else 0)
+                sp.setRange(k["lo"], k["hi"])
+                sp.setValue(float(r["value"] or k["lo"]))
+                sp.setPrefix("$ " if k["unit"] == "$" else "")
+                sp.setSuffix(" %" if k["unit"] == "%" else "")
+                sp.setFont(theme.font(13))
+                sp.setFixedWidth(130)
+                sp.setKeyboardTracking(False)
+                sp.setLocale(QLocale(QLocale.Language.English))
+                sp.valueChanged.connect(lambda v, rr=r: rr.__setitem__("value", float(v)))
+                line.addWidget(sp)
+            rm = button("ลบ", "Link", 12)
+            rm.clicked.connect(lambda _=False, idx=i: (self.rules.pop(idx), self._render()))
+            line.addWidget(rm)
+            self.body.addLayout(line)
+        have = {r["kind"] for r in self.rules}
+        self.add_btn.setVisible(len(have) < len(RL.KINDS))
+
+    def _add_menu(self):
+        have = {r["kind"] for r in self.rules}
+        m = QMenu(self)
+        m.setFont(theme.font(13))
+        for kind, k in RL.KINDS.items():
+            if kind not in have:
+                m.addAction(k["title"], lambda kk=kind: self._add(kk))
+        m.exec(self.add_btn.mapToGlobal(self.add_btn.rect().bottomLeft()))
+
+    def _add(self, kind: str):
+        val = RL.KINDS[kind]["default"]
+        if kind == "price_below":
+            val = round((self.price or 100) * 0.85, 2)
+        self.rules.append(RL.make(kind, val))
+        self._render()
+
+    def _save(self):
+        self.result_rules = RL.clean(self.rules)
+        self.accept()
 
 
 class HoldingDialog(QDialog):

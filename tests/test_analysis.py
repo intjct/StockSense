@@ -193,3 +193,49 @@ def test_check_portfolio_empty_and_buy_fit_in_buy(src):
     r = analyzer.run("NVDA", "buy", None, 35.0, holdings=[{"ticker": "AAPL", "shares": 5, "avg_price": 100}])
     assert r["fit"] and r["fit"]["amount"] == 500 and r["fit"]["weight_before"] == 0
     assert "fit" not in analyzer.run("NVDA", "buy", None, 35.0)       # no portfolio given -> no note
+
+
+# ---------------------------------------------------------------- เงื่อนไขเปลี่ยนใจ
+
+def test_rule_states():
+    from stocksense import rules as RL
+    ctx = {"price": 100.0, "avg_price": 120.0, "weight_pct": 39.0, "surprise_pct": -5.0}
+    ev = lambda kind, v=None: RL.evaluate(RL.make(kind, v), ctx)["state"]   # noqa: E731
+    assert ev("price_below", 96) == "near" and ev("price_below", 90) == "ok" and ev("price_below", 105) == "hit"
+    assert ev("loss_pct", 15) == "hit" and ev("loss_pct", 20) == "near" and ev("loss_pct", 40) == "ok"   # 100 vs 120 = -16.7%
+    assert ev("weight_above", 40) == "near" and ev("weight_above", 39) == "hit" and ev("weight_above", 60) == "ok"
+    assert ev("earnings_miss") == "hit"
+    assert RL.evaluate(RL.make("earnings_miss"), {"price": 1}) ["state"] == "unknown"
+    assert RL.evaluate({"kind": "loss_pct", "value": 10, "on": False}, ctx)["state"] == "off"
+    assert RL.clean([{"kind": "nope"}, {"kind": "loss_pct", "value": "x"}, {"kind": "loss_pct", "value": 0},
+                     {"kind": "earnings_miss", "value": None}]) == [{"kind": "earnings_miss", "value": None, "on": True}]
+    d = RL.default_rules(140.0, 123.0)
+    assert [r["kind"] for r in d] == ["price_below", "loss_pct", "weight_above", "earnings_miss"] and d[0]["value"] == 123.0
+    assert [r["kind"] for r in RL.default_rules(100.0, None, False)] == ["price_below", "loss_pct", "weight_above"]
+
+
+def test_rules_survive_editing_a_holding(tmp_path):
+    from stocksense.portfolio import Portfolio
+    from stocksense import rules as RL
+    pf = Portfolio()
+    pf.upsert({"ticker": "NVDA", "shares": 1, "avg_price": 100, "rules": RL.default_rules(100, 90)})
+    pf.upsert({"ticker": "NVDA", "shares": 2, "avg_price": 100})                  # edited in the add/edit form
+    assert len(Portfolio().get("NVDA")["rules"]) == 4 and Portfolio().get("NVDA")["shares"] == 2
+
+
+def test_check_rules_and_sell_result(src):
+    from stocksense import rules as RL
+    a = Analyzer(src)
+    hs = [{"ticker": "NVDA", "shares": 30, "avg_price": 90, "rules": [
+              {"kind": "price_below", "value": 10000.0, "on": True}, {"kind": "earnings_miss", "value": None, "on": True},
+              {"kind": "weight_above", "value": 10.0, "on": False}]},
+          {"ticker": "AAPL", "shares": 1, "avg_price": 100}]
+    out = a.check_rules(hs)
+    assert list(out) == ["NVDA"]
+    st = {r["rule"]["kind"]: r["state"] for r in out["NVDA"]}
+    assert st == {"price_below": "hit", "earnings_miss": "ok", "weight_above": "off"}
+    r = a.run("NVDA", "sell", hs[0], 35.0, holdings=hs)
+    assert [x["state"] for x in r["rules"]] == ["hit", "ok", "off"] and r["suggested_rules"] == []
+    r2 = a.run("AAPL", "sell", hs[1], 35.0, holdings=hs)
+    assert r2["rules"] == [] and [x["kind"] for x in r2["suggested_rules"]][0] == "price_below"
+    assert RL.summary(out["NVDA"]) == {"hit": 1, "near": 0}

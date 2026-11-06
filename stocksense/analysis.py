@@ -11,6 +11,7 @@ import re
 
 from . import fundamentals as F
 from . import portfolio_check as PC
+from . import rules as RL
 from . import scoring as S
 from .net import DAY, SourceError
 from .sources import ETFS, Sources
@@ -122,7 +123,8 @@ class Analyzer:
     # ------------------------------------------------------------ buy / sell
     def run(self, sym: str, mode: str = "buy", holding: dict | None = None, fx: float | None = None,
             explain: bool = True, holdings: list | None = None) -> dict:
-        """holdings (buy only): the whole portfolio, so the result can say how the mix would change."""
+        """holdings: the whole portfolio, so a buy result can say how the mix would change
+        and a sell result can check the person's เงื่อนไขเปลี่ยนใจ (weight rule)."""
         g = self.gather(sym)
         news = []
         try:
@@ -173,6 +175,16 @@ class Analyzer:
         }
         if mode == "buy" and holdings:
             result["fit"] = self.buy_fit(g["sym"], g["is_etf"], holdings)
+        if mode == "sell" and holding:
+            weight = None
+            if holdings:
+                weight = self._weight(g["sym"], *self._items_bets(holdings))
+            ctx = {"price": price, "avg_price": holding.get("avg_price"), "weight_pct": weight,
+                   "surprise_pct": parts["earnings"]["facts"].get("last_surprise_pct")}
+            result["rule_ctx"] = ctx
+            result["rules"] = RL.evaluate_all(holding.get("rules"), ctx)
+            result["suggested_rules"] = [] if result["rules"] else RL.default_rules(
+                price, parts["chart"]["facts"].get("support"), not g["is_etf"])
         if g["is_etf"]:
             result["etf_note"] = ("นี่คือกองทุนรวมหุ้นหลายร้อยตัว ไม่มีงบการเงินของตัวเอง "
                                   + ("คนส่วนใหญ่ซื้อสะสมเรื่อยๆ ระยะยาว การรอจังหวะซื้อมักได้ผลไม่ต่างกันมาก"
@@ -180,6 +192,46 @@ class Analyzer:
                                      "การขายเพราะตลาดลงชั่วคราวเป็นความผิดพลาดที่พบบ่อยที่สุด ถ้ายังถือยาวได้ มักไม่จำเป็นต้องขาย"))
         return result
 
+
+
+    # ------------------------------------------------------------ เงื่อนไขเปลี่ยนใจ
+    def _items_bets(self, holdings: list[dict]):
+        items = self._values(holdings)
+        return items, PC.bets(PC.exposures(items))
+
+    @staticmethod
+    def _weight(sym: str, items: list[dict], bets: list[dict]) -> float | None:
+        """Share of the portfolio (counting what sits inside index funds); None if the price is unknown."""
+        total = sum(i["value"] for i in items)
+        if not total or not any(i["ticker"] == sym for i in items):
+            return None
+        b = next((x for x in bets if x["name"] == PC.norm(sym)), None)
+        if b:
+            return b["pct"]
+        return sum(i["value"] for i in items if i["ticker"] == sym) / total * 100
+
+    def _surprise(self, sym: str) -> float | None:
+        try:
+            return S.earnings(self.src.earnings(sym), "")["facts"].get("last_surprise_pct")
+        except SourceError:
+            return None
+
+    def check_rules(self, holdings: list[dict]) -> dict:
+        """{ticker: [evaluated rules]} for every holding that has at least one rule switched on.
+        Runs quietly at start-up: no AI, and a failed source simply makes that rule "unknown"."""
+        todo = [h for h in holdings if any(r["on"] for r in RL.clean(h.get("rules")))]
+        if not todo:
+            return {}
+        items, bets = self._items_bets(holdings)
+        prices = {i["ticker"]: i["price"] for i in items}
+        out = {}
+        for h in todo:
+            sym, rules = h["ticker"], RL.clean(h.get("rules"))
+            ctx = {"price": prices.get(sym), "avg_price": h.get("avg_price"), "weight_pct": self._weight(sym, items, bets)}
+            if sym not in ETFS and any(r["kind"] == "earnings_miss" and r["on"] for r in rules):
+                ctx["surprise_pct"] = self._surprise(sym)
+            out[sym] = RL.evaluate_all(rules, ctx)
+        return out
 
     # ------------------------------------------------------------ portfolio
     FIT_AMOUNT = 500.0

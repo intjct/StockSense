@@ -137,7 +137,7 @@ def _footer(page: QVBoxLayout, missing: list[str]):
 
 # ---------------------------------------------------------------- buy / sell
 
-def build_trade(r: dict, prev: dict | None = None, on_add_holding=None) -> QWidget:
+def build_trade(r: dict, prev: dict | None = None, on_add_holding=None, on_rules=None) -> QWidget:
     w = QWidget()
     w.setObjectName("Page")
     page = QVBoxLayout(w)
@@ -201,6 +201,8 @@ def build_trade(r: dict, prev: dict | None = None, on_add_holding=None) -> QWidg
             page.addWidget(f)
         for flag in r.get("flags") or []:
             page.addWidget(label("⚠ " + flag, 13, name="Danger", wrap=True))
+        if pos and on_rules:
+            _rules_section(page, r, on_rules)
 
     if r.get("conflict"):
         page.addWidget(label("ข้อมูลขัดกัน: " + r["conflict"], 13, name="Warn", wrap=True))
@@ -257,6 +259,39 @@ def build_trade(r: dict, prev: dict | None = None, on_add_holding=None) -> QWidg
     _footer(page, r.get("missing") or [])
     page.addStretch(1)
     return w
+
+
+def _rules_section(page: QVBoxLayout, r: dict, on_rules):
+    """Sell page: the person's เงื่อนไขเปลี่ยนใจ for this holding and whether each has happened."""
+    f, l = _section("เงื่อนไขเปลี่ยนใจของ " + r["sym"],
+                    "ตั้งไว้ตอนใจเย็นว่า ถ้าเกิดเรื่องไหนขึ้น จะกลับมาทบทวนว่าควรถือต่อไหม โปรแกรมเช็กให้ทุกครั้งที่เปิด และเตือนที่แถบซ้าย ไม่ได้ขายให้เอง")
+    icons = {"hit": ("▼", theme.BAD, "bad"), "near": ("●", theme.MID, "mid"), "ok": ("▲", theme.GOOD, "good"),
+             "unknown": ("–", theme.TEXT_FAINT, "none"), "off": ("–", theme.TEXT_FAINT, "none")}
+    rules, sugg = r.get("rules") or [], r.get("suggested_rules") or []
+    if rules:
+        for x in rules:
+            mark, color, tone = icons[x["state"]]
+            line = QHBoxLayout()
+            line.setSpacing(10)
+            line.addWidget(label(mark, 13, True, color=color), 0, Qt.AlignmentFlag.AlignTop)
+            line.addWidget(label(x["desc"], 13, wrap=True), 1)
+            line.addWidget(pill(x["text"], tone, 11), 0, Qt.AlignmentFlag.AlignTop)
+            l.addLayout(line)
+        hits = [x for x in rules if x["state"] == "hit"]
+        if hits:
+            l.addWidget(label(f"เกิดขึ้นแล้ว {len(hits)} ข้อ ตามที่คุณตั้งไว้ ถึงเวลากลับมาทบทวนว่าจะถือต่อหรือไม่", 13, name="Danger", wrap=True))
+        b = button("แก้เงื่อนไข", "Ghost", 12)
+        b.clicked.connect(lambda: on_rules(r["sym"], []))
+        l.addLayout(row(b, None))
+    else:
+        l.addWidget(label("ยังไม่ได้ตั้งเงื่อนไข ให้โปรแกรมเสนอให้ก่อนได้ จะแก้ตัวเลขหรือเอาข้อไหนออกก็ได้ก่อนบันทึก", 13, name="Soft", wrap=True))
+        for x in sugg:
+            from .. import rules as RL
+            l.addWidget(label("• " + RL.describe(x), 13))
+        b = button("ตั้งเงื่อนไขให้", "Dark", 12)
+        b.clicked.connect(lambda: on_rules(r["sym"], sugg))
+        l.addLayout(row(b, None))
+    page.addWidget(f)
 
 
 def _fit_section(page: QVBoxLayout, r: dict):

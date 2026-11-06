@@ -97,6 +97,17 @@ def selftest() -> int:
         return f"health {r['health']}%"
     check("portfolio check", portfolio)
 
+    def rules_check():
+        from . import rules as RL
+        hs = [{"ticker": "NVDA", "shares": 5, "avg_price": 90, "buy_date": "2025-01-02",
+               "rules": [RL.make("price_below", 99999.0), RL.make("loss_pct", 20.0)]}]
+        out = Analyzer(src).check_rules(hs)
+        assert "NVDA" in out, out
+        sm = RL.summary(out["NVDA"])
+        assert sm["hit"] >= 1, out
+        return f"hit {sm['hit']}"
+    check("change-of-mind rules", rules_check)
+
     def update_check():
         from . import updater
         assert updater.is_newer("1.0.1", "1.0.0") and not updater.is_newer("0.0.1", VERSION)

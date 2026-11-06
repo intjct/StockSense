@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+from . import rules as RL
 from .settings import read_json, write_json
 
 
@@ -20,14 +21,18 @@ class Portfolio:
         return next((h for h in self.holdings if h["ticker"].upper() == t), None)
 
     def upsert(self, h: dict) -> None:
+        """Rules ("rules") are kept from the old record unless the new one brings its own."""
+        rules = h.get("rules")
         h = {"ticker": h["ticker"].upper().strip(), "name": h.get("name") or h["ticker"].upper(),
              "shares": float(h.get("shares") or 0), "avg_price": float(h.get("avg_price") or 0),
              "buy_date": h.get("buy_date") or dt.date.today().isoformat(), "reason": (h.get("reason") or "").strip()}
         for i, old in enumerate(self.holdings):
             if old["ticker"] == h["ticker"]:
+                h["rules"] = RL.clean(rules if rules is not None else old.get("rules"))
                 self.holdings[i] = h
                 break
         else:
+            h["rules"] = RL.clean(rules)
             self.holdings.append(h)
         self.save()
 

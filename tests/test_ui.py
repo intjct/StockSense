@@ -148,3 +148,31 @@ def test_sec_list_retries(app, monkeypatch):
     w = _win()
     _wait(app, lambda: n["c"] >= 1)
     assert not w.sec_loaded
+
+
+def test_rules_alert_in_sidebar_and_sell_page(app):
+    from stocksense import rules as RL
+    w = _win()
+    w.pf.upsert({"ticker": "NVDA", "shares": 3, "avg_price": 100,
+                 "rules": [{"kind": "price_below", "value": 10000.0, "on": True}, RL.make("earnings_miss")]})
+    w.check_rules_async()
+    _wait(app, lambda: "NVDA" in w.rule_status)
+    assert w._alert_of("NVDA") == "hit" and w.alert_l.count() == 1
+    w.search.setText("NVDA")
+    w.run("sell")
+    _wait(app, lambda: not w.busy)
+    assert w.last["rules"][0]["state"] == "hit" and w.last["suggested_rules"] == []
+    w.pf.upsert({"ticker": "NVDA", "shares": 4, "avg_price": 100})            # edit form must not lose the rules
+    assert len(w.pf.get("NVDA")["rules"]) == 2
+
+
+def test_rules_dialog_edit(app):
+    from stocksense import rules as RL
+    from stocksense.ui.dialogs import RulesDialog
+    d = RulesDialog(None, "NVDA", RL.default_rules(140.0, 123.0), 140.0)
+    assert [r["kind"] for r in d.rules] == ["price_below", "loss_pct", "weight_above", "earnings_miss"]
+    d.rules.pop(0)
+    d._add("price_below")
+    d._save()
+    out = d.result_rules
+    assert [r["kind"] for r in out][-1] == "price_below" and out[-1]["value"] == 119.0 and len(out) == 4

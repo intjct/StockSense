@@ -8,11 +8,12 @@ from PySide6.QtWidgets import (QCompleter, QFrame, QHBoxLayout, QLineEdit, QMenu
 from .. import APP_NAME, VERSION
 from ..analysis import Analyzer
 from ..net import Cache, Http, SourceError
+from .. import rules as RL
 from ..portfolio import History, Portfolio
 from ..sources import ALIASES, ETFS, Sources
 from . import results as R
 from . import theme
-from .dialogs import HoldingDialog, SettingsDialog, ask
+from .dialogs import HoldingDialog, RulesDialog, SettingsDialog, ask
 from .updatebar import UpdateBar
 from .widgets import baht, button, clear, label, money, row, run_in_background, signed_pct
 
@@ -23,7 +24,7 @@ class HoldingRow(QFrame):
     clicked = Signal(str)
     menu = Signal(str, object)
 
-    def __init__(self, h: dict, price: float | None, selected: bool):
+    def __init__(self, h: dict, price: float | None, selected: bool, alert: str | None = None):
         super().__init__()
         self.ticker = h["ticker"]
         self.setObjectName("HoldingOn" if selected else "Holding")
@@ -32,7 +33,13 @@ class HoldingRow(QFrame):
         lay.setContentsMargins(10, 7, 10, 7)
         col = QVBoxLayout()
         col.setSpacing(0)
-        col.addWidget(label(h["ticker"], 13, True))
+        title = [label(h["ticker"], 13, True)]
+        if alert:
+            dot = QFrame()
+            dot.setFixedSize(8, 8)
+            dot.setStyleSheet(f"background:{'#FF6B5A' if alert == 'hit' else '#F2B84B'}; border-radius:4px; border:none;")
+            title.append(dot)
+        col.addLayout(row(*title, None, spacing=6))
         col.addWidget(label(f"{h['shares']:g} หุ้น", 11, name="SideSoft"))
         lay.addLayout(col, 1)
         if price is not None and h.get("avg_price"):
@@ -70,7 +77,9 @@ class MainWindow(QWidget):
         self.selected = ""
         self.last: dict | None = None
         self.last_kind = ""
+        self.rule_status: dict[str, list] = {}   # ticker -> evaluated เงื่อนไขเปลี่ยนใจ
         self.names: dict[str, str] = {}        # completer text -> ticker
+        self.online_names: dict[str, str] = {}
         self.setObjectName("Main")
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(theme.app_icon())
@@ -138,6 +147,7 @@ class MainWindow(QWidget):
         self.show_empty()
         self.refresh_portfolio()
         self._load_tickers()
+        self.check_rules_async()
         if check_updates:
             self.update_bar.start()
 
@@ -161,6 +171,12 @@ class MainWindow(QWidget):
         l.addWidget(self.total)
         l.addWidget(self.total_thb)
         l.addWidget(self.total_pl)
+        self.alert_holder = QWidget()
+        self.alert_holder.setStyleSheet("background: transparent;")
+        self.alert_l = QVBoxLayout(self.alert_holder)
+        self.alert_l.setContentsMargins(0, 6, 0, 0)
+        self.alert_l.setSpacing(4)
+        l.addWidget(self.alert_holder)
         l.addSpacing(10)
         self.list_holder = QWidget()
         self.list_holder.setStyleSheet("background: transparent;")
@@ -188,7 +204,7 @@ class MainWindow(QWidget):
         known = True
         for h in self.pf.holdings:
             p = self.prices.get(h["ticker"])
-            r = HoldingRow(h, p, h["ticker"] == self.selected)
+            r = HoldingRow(h, p, h["ticker"] == self.selected, self._alert_of(h["ticker"]))
             r.clicked.connect(self.select)
             r.menu.connect(self._holding_menu)
             self.list_l.addWidget(r)
@@ -236,6 +252,61 @@ class MainWindow(QWidget):
                     self.refresh_portfolio(fetch=False)
             run_in_background(work, done)
 
+    # ------------------------------------------------------------ เงื่อนไขเปลี่ยนใจ
+    def _alert_of(self, ticker: str) -> str | None:
+        sm = RL.summary(self.rule_status.get(ticker) or [])
+        return "hit" if sm["hit"] else "near" if sm["near"] else None
+
+    def refresh_alerts(self):
+        clear(self.alert_l)
+        for h in self.pf.holdings:
+            res = self.rule_status.get(h["ticker"]) or []
+            sm = RL.summary(res)
+            if not (sm["hit"] or sm["near"]):
+                continue
+            hit = bool(sm["hit"])
+            text = (f"⚠ {h['ticker']} · เงื่อนไขเกิดแล้ว {sm['hit']} ข้อ" if hit
+                    else f"● {h['ticker']} · ใกล้ถึงเงื่อนไข {sm['near']} ข้อ")
+            b = button(text + "  ดูเลย", "SideAlert" if hit else "SideNear", 12)
+            b.setToolTip("กดเพื่อดูผลวิเคราะห์ขายของหุ้นตัวนี้ และตัดสินใจว่าจะถือต่อไหม")
+            b.clicked.connect(lambda _=False, t=h["ticker"]: self._open_sell(t))
+            self.alert_l.addWidget(b)
+        self.refresh_portfolio(fetch=False)
+
+    def check_rules_async(self):
+        """Quietly checks every holding's rules (no AI). Runs at start-up and after any change."""
+        holdings = [dict(h) for h in self.pf.holdings]
+        src = self._sources()
+
+        def done(res, err):
+            if res is not None:
+                self.rule_status = res
+            elif err is not None:
+                return
+            self.refresh_alerts()
+        run_in_background(lambda _p: Analyzer(src).check_rules(holdings), done)
+
+    def edit_rules(self, ticker: str, suggested: list):
+        h = self.pf.get(ticker)
+        if not h:
+            return
+        price = self.prices.get(ticker)
+        d = RulesDialog(self, ticker, suggested or h.get("rules") or [], price)
+        if not d.exec() or d.result_rules is None:
+            return
+        h = dict(h)
+        h["rules"] = d.result_rules
+        self.pf.upsert(h)
+        if self.last and self.last_kind == "sell" and self.last["sym"] == ticker and self.last.get("rule_ctx") is not None:
+            self.last["rules"] = RL.evaluate_all(d.result_rules, self.last["rule_ctx"])
+            self.last["suggested_rules"] = []
+            bar = self.scroll.verticalScrollBar().value()
+            self._set_page(R.build_trade(self.last, None, self.add_holding, self.edit_rules))
+            self.scroll.verticalScrollBar().setValue(bar)
+            self.rule_status[ticker] = self.last["rules"]
+            self.refresh_alerts()
+        self.check_rules_async()
+
     def select(self, ticker: str):
         self.selected = ticker
         self.search.setText(ticker)
@@ -257,7 +328,8 @@ class MainWindow(QWidget):
     def _remove(self, ticker: str):
         if ask(self, f"ลบ {ticker} ออกจากพอร์ต?", "แค่ลบออกจากโปรแกรมนี้ ไม่ได้ขายหุ้นจริงในแอป Dime", "ลบออก"):
             self.pf.remove(ticker)
-            self.refresh_portfolio(fetch=False)
+            self.rule_status.pop(ticker, None)
+            self.refresh_alerts()
 
     def add_holding(self, ticker: str = ""):
         existing = self.pf.get(ticker) if ticker else None
@@ -273,6 +345,7 @@ class MainWindow(QWidget):
             self.pf.upsert(h)
             self.selected = h["ticker"]
         self.refresh_portfolio()
+        self.check_rules_async()
 
     # ------------------------------------------------------------ search
     def _fill_names(self, sec: dict):
@@ -283,6 +356,7 @@ class MainWindow(QWidget):
             names.setdefault(f"{t} — {row_['name']}", t)
         for a, t in ALIASES.items():
             names.setdefault(f"{a.title() if a.isascii() else a} → {t}", t)
+        names.update(self.online_names)          # names found by the live search must survive the SEC list arriving later
         self.names = names
         self.model.setStringList(sorted(names, key=lambda s: (len(s.split(" ")[0]), s)))
 
@@ -302,11 +376,8 @@ class MainWindow(QWidget):
         added = False
         for r in rows:
             key = f"{r['ticker']} — {r['name']}"
-            if key not in self.names and r["ticker"] not in self.names.values():
-                self.names[key] = r["ticker"]
-                added = True
-            elif key not in self.names:
-                self.names[key] = r["ticker"]
+            if key not in self.names:
+                self.names[key] = self.online_names[key] = r["ticker"]
                 added = True
         if added:
             self.model.setStringList(sorted(self.names, key=lambda s: (len(s.split(" ")[0]), s)))
@@ -428,7 +499,7 @@ class MainWindow(QWidget):
             if kind == "portfolio":
                 return a.check_portfolio(holdings, fx)
             return a.run(sym, kind, holding if kind == "sell" else None, fx,
-                         holdings=holdings if kind == "buy" else None)
+                         holdings=holdings if kind in ("buy", "sell") else None)
 
         def done(res, err):
             self._set_busy(False)
@@ -463,7 +534,10 @@ class MainWindow(QWidget):
         if res["sym"] in {h["ticker"] for h in self.pf.holdings}:
             self.prices[res["sym"]] = res["price"]
             self.refresh_portfolio(fetch=False)
-        self._set_page(R.build_trade(res, prev, self.add_holding))
+        if res["kind"] == "sell" and res.get("rules") is not None:
+            self.rule_status[res["sym"]] = res["rules"]
+            self.refresh_alerts()
+        self._set_page(R.build_trade(res, prev, self.add_holding, self.edit_rules))
 
     # ------------------------------------------------------------ settings
     def open_settings(self):
