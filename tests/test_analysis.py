@@ -270,3 +270,11 @@ def test_verify_people_rules():
 def test_sec_user_agent_names_program_and_contact():
     from stocksense.net import UA_SEC
     assert UA_SEC.startswith("StockSense ") and "@" in UA_SEC
+
+
+def test_sec_refusal_message_says_why():
+    from stocksense.net import friendly
+    a = friendly("sec", 403, "Your Request Originates from an Undeclared Automated Tool")
+    b = friendly("sec", 403, "Request Rate Threshold Exceeded")
+    c = friendly("sec", 403, "")
+    assert "ไม่รับรู้" in a.th and "10 นาที" in b.th and "403" in c.th

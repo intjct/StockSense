@@ -41,7 +41,11 @@ def friendly(source: str, status: int | None, body: str = "") -> SourceError:
     if status in (401, 403) or "api_key_invalid" in low or "api key not valid" in low:
         if source in ("gemini", "finnhub"):
             return SourceError("key", f"คีย์ของ{name}ใช้ไม่ได้ ลองเช็กในหน้าตั้งค่า", source)
-        return SourceError("other", f"{name}ไม่ยอมให้ดึงข้อมูลตอนนี้ ลองใหม่อีกครั้งภายหลัง", source)
+        if "undeclared" in low or "automated tool" in low:
+            return SourceError("other", f"{name}ไม่รับรู้ว่าโปรแกรมนี้คือใคร (รหัส {status}) แจ้งผู้สร้างโปรแกรมได้เลย", source)
+        if "rate" in low and ("threshold" in low or "limit" in low):
+            return SourceError("other", f"{name}บล็อกชั่วคราวเพราะขอข้อมูลถี่เกินไป (รหัส {status}) รอประมาณ 10 นาทีแล้วลองใหม่", source)
+        return SourceError("other", f"{name}ไม่ยอมให้ดึงข้อมูลตอนนี้ (รหัส {status}) ลองใหม่อีกครั้งภายหลัง", source)
     if status == 400 and source == "gemini" and "key" in low:
         return SourceError("key", f"คีย์ของ{name}ใช้ไม่ได้ ลองเช็กในหน้าตั้งค่า", source)
     if status == 404:
