@@ -109,6 +109,12 @@ class FakeInternet:
         p = u.path
         params = params or {}
         ok = lambda d: (200, json.dumps(d))  # noqa: E731
+        if "finance.yahoo.com" in u.netloc and p == "/v1/finance/search":
+            q = str(params.get("q", "")).lower()
+            rows = [("DELL", "Dell Technologies Inc."), ("PLTR", "Palantir Technologies Inc.")]
+            return ok({"quotes": [{"symbol": a, "longname": b, "quoteType": "EQUITY", "exchange": "NYQ"}
+                                  for a, b in rows if q in a.lower() or q in b.lower()] +
+                       [{"symbol": "DELL.DE", "shortname": "Dell DE", "quoteType": "EQUITY", "exchange": "GER"}]})
         if "finance.yahoo.com" in u.netloc:
             sym = p.rsplit("/", 1)[-1]
             if sym == "THB=X":

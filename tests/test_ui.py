@@ -118,3 +118,33 @@ def test_portfolio_button_empty_portfolio(app):
     w = MainWindow(s, Portfolio(), History(), http=Http(FakeInternet()), check_updates=False)
     w.run("portfolio")
     assert not w.busy and w.last is None
+
+
+def test_search_works_without_sec_list(app):
+    w = _win()
+    w.show()
+    w.search.setText("dell")
+    w._search_online()
+    _wait(app, lambda: any(t == "DELL" for t in w.names.values()))
+    assert "DELL — Dell Technologies Inc." in w.names and not any("DELL.DE" in k for k in w.names)
+    w.search.setText("Palantir")                       # a name nobody typed a ticker for
+    w.run("buy")
+    _wait(app, lambda: not w.busy and w.search.text() == "PLTR" or (not w.busy and w.last is not None), 20)
+    assert w.search.text() == "PLTR"
+
+
+def test_sec_list_retries(app, monkeypatch):
+    from stocksense.sources import Sources
+    n = {"c": 0}
+    real = Sources.sec_tickers
+
+    def flaky(self):
+        n["c"] += 1
+        if n["c"] == 1:
+            raise SourceError("other", "x", "sec")
+        return real(self)
+    from stocksense.net import SourceError
+    monkeypatch.setattr(Sources, "sec_tickers", flaky)
+    w = _win()
+    _wait(app, lambda: n["c"] >= 1)
+    assert not w.sec_loaded

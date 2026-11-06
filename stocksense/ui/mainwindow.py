@@ -1,7 +1,7 @@
 """Main window: black portfolio sidebar on the left, search + 4 buttons + results on the right."""
 from __future__ import annotations
 
-from PySide6.QtCore import QStringListModel, Qt, Signal
+from PySide6.QtCore import QStringListModel, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (QCompleter, QFrame, QHBoxLayout, QLineEdit, QMenu, QScrollArea, QVBoxLayout, QWidget)
 
@@ -102,6 +102,12 @@ class MainWindow(QWidget):
         comp.setMaxVisibleItems(10)
         comp.popup().setFont(theme.font(13))
         self.search.setCompleter(comp)
+        self._typed = QTimer(self)
+        self._typed.setSingleShot(True)
+        self._typed.setInterval(350)
+        self._typed.timeout.connect(self._search_online)
+        self.search.textEdited.connect(lambda _t: self._typed.start())
+        self.sec_loaded = False
         rl.addWidget(self.search)
 
         self.b_buy = button("วิเคราะห์ซื้อ", "Lime", 14, True)
@@ -280,9 +286,45 @@ class MainWindow(QWidget):
         self.names = names
         self.model.setStringList(sorted(names, key=lambda s: (len(s.split(" ")[0]), s)))
 
-    def _load_tickers(self):
+    def _load_tickers(self, attempt: int = 0):
+        """Full company list from SEC. If it fails, try again a bit later (the online search covers meanwhile)."""
         src = self._sources()
-        run_in_background(lambda _p: src.sec_tickers(), lambda res, err: self._fill_names(res) if res else None)
+
+        def done(res, err):
+            if res:
+                self.sec_loaded = True
+                self._fill_names(res)
+            elif attempt < 4:
+                QTimer.singleShot(30000 * (attempt + 1), lambda: self._load_tickers(attempt + 1))
+        run_in_background(lambda _p: src.sec_tickers(), done)
+
+    def _add_names(self, rows: list[dict]):
+        added = False
+        for r in rows:
+            key = f"{r['ticker']} — {r['name']}"
+            if key not in self.names and r["ticker"] not in self.names.values():
+                self.names[key] = r["ticker"]
+                added = True
+            elif key not in self.names:
+                self.names[key] = r["ticker"]
+                added = True
+        if added:
+            self.model.setStringList(sorted(self.names, key=lambda s: (len(s.split(" ")[0]), s)))
+
+    def _search_online(self):
+        text = self.search.text().strip()
+        if len(text) < 2 or " — " in text or " → " in text:
+            return
+        src = self._sources()
+
+        def done(res, err):
+            if res and text == self.search.text().strip():
+                self._add_names(res)
+                c = self.search.completer()
+                if c is not None and self.search.hasFocus():
+                    c.setCompletionPrefix(text)
+                    c.complete()
+        run_in_background(lambda _p: src.search(text), done)
 
     def resolve(self, text: str) -> str:
         t = (text or "").strip()
@@ -299,6 +341,29 @@ class MainWindow(QWidget):
         if t in ALIASES:
             return ALIASES[t]
         return up.replace(".", "-").replace(" ", "")
+
+    def _looks_like_name(self, text: str, sym: str) -> bool:
+        """True when the box holds a company name we don't know yet (e.g. "Palantir"), not a ticker."""
+        t = text.strip()
+        if t in self.names or t.upper() in ALIASES or t in ALIASES or " — " in t or " → " in t:
+            return False
+        return sym not in self.names.values() and (len(sym) > 5 or " " in t or not t.isascii())
+
+    def _lookup_then_run(self, kind: str, text: str):
+        src = self._sources()
+        self._set_busy(True)
+        self._set_page(R.Loading(f"กำลังหาหุ้นชื่อ “{text}”"))
+
+        def done(res, err):
+            self._set_busy(False)
+            if res:
+                self._add_names(res)
+                self.search.setText(res[0]["ticker"])
+                self.run(kind)
+            else:
+                self._set_page(R.build_error(f"ไม่เจอหุ้นสหรัฐชื่อ “{text}” ลองพิมพ์ชื่อภาษาอังกฤษ หรือตัวย่อหุ้น เช่น DELL", False,
+                                             self.open_settings, lambda: self.run(kind)))
+        run_in_background(lambda _p: src.search(text), done)
 
     # ------------------------------------------------------------ run
     def _sources(self) -> Sources:
@@ -321,6 +386,9 @@ class MainWindow(QWidget):
         if self.busy:
             return
         sym = "" if kind == "portfolio" else self.resolve(self.search.text())
+        if kind != "portfolio" and sym and self._looks_like_name(self.search.text(), sym):
+            self._lookup_then_run(kind, self.search.text().strip())
+            return
         if kind != "portfolio" and not sym:
             self.search.setFocus()
             self.search.setPlaceholderText("พิมพ์ชื่อหุ้นก่อน แล้วค่อยกดปุ่ม")

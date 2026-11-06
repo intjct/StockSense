@@ -21,6 +21,7 @@ from html.parser import HTMLParser
 from .net import DAY, HOUR, Cache, Http, SourceError
 
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+YAHOO_SEARCH = "https://query2.finance.yahoo.com/v1/finance/search"
 FX_URL = "https://open.er-api.com/v6/latest/USD"
 SEC_TICKERS = "https://www.sec.gov/files/company_tickers.json"
 SEC_FACTS = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
@@ -181,6 +182,27 @@ class Sources:
                     out[t] = {"cik": int(row["cik_str"]), "name": row.get("title", t)}
             return out
         return self.cache.remember("sec-tickers", 7 * DAY, make)
+
+    def search(self, text: str) -> list[dict]:
+        """Live name search (Yahoo) for US stocks/ETFs: [{ticker, name}]. Backup for when the SEC list is missing."""
+        q = (text or "").strip()
+        if len(q) < 2:
+            return []
+        def make():
+            d = self.http.get_json("yahoo", YAHOO_SEARCH, params={"q": q, "quotesCount": 8, "newsCount": 0,
+                                                                    "listsCount": 0, "lang": "en-US"})
+            out = []
+            for it in d.get("quotes") or []:
+                sym = str(it.get("symbol") or "").upper()
+                if it.get("quoteType") not in ("EQUITY", "ETF") or not sym or "." in sym.replace("-", "") \
+                        or it.get("exchange") in ("TOR", "LSE", "GER", "PAR", "HKG", "TYO", "BSE", "NSI", "SET"):
+                    continue
+                out.append({"ticker": sym, "name": it.get("longname") or it.get("shortname") or sym})
+            return {"rows": out}
+        try:
+            return self.cache.remember("search-" + re.sub(r"\W+", "_", q.lower())[:40], DAY, make)["rows"]
+        except SourceError:
+            return []
 
     def cik(self, sym: str) -> int | None:
         row = self.sec_tickers().get(sym.upper()) or self.sec_tickers().get(sym.upper().replace("-", "."))
