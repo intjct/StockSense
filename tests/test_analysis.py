@@ -239,3 +239,29 @@ def test_check_rules_and_sell_result(src):
     r2 = a.run("AAPL", "sell", hs[1], 35.0, holdings=hs)
     assert r2["rules"] == [] and [x["kind"] for x in r2["suggested_rules"]][0] == "price_below"
     assert RL.summary(out["NVDA"]) == {"hit": 1, "near": 0}
+
+
+def test_analyst_box_keeps_only_people_named_in_news(src):
+    r = Analyzer(src).run("NVDA", "buy")
+    box = r["analyst_box"]
+    assert box["summary"]["word"] == "ซื้อ" and box["summary"]["buy"] > box["summary"]["sell"]
+    names = [p["name"] for p in box["people"]]
+    assert names == ["Jane Doe"], names              # the invented "Made Up Person" is dropped
+    p = box["people"][0]
+    assert p["firm"] == "Example Securities" and p["url"] and p["stance"] == "good" and p["date"]
+
+
+def test_analyst_box_absent_for_etf(src):
+    assert "analyst_box" not in Analyzer(src).run("VOO", "buy")
+
+
+def test_verify_people_rules():
+    news = [{"headline": "Alex Roe of Big Bank cuts target", "summary": "", "date": "2026-11-01", "url": "u", "source": "X"}]
+    ok = {"i": 0, "name": "Alex Roe", "firm": "Big Bank", "role_th": "นักวิเคราะห์", "stance": "bad", "view_th": "ลดราคาเป้าหมาย"}
+    v = Analyzer._verify_people
+    assert len(v([ok], news)) == 1
+    assert v([{**ok, "name": "Wedbush"}], news) == []                 # one word is not a person
+    assert v([{**ok, "name": "Bob Smith"}], news) == []               # not in the text
+    assert v([{**ok, "firm": "Other Firm"}], news)[0]["firm"] == ""   # firm not in text -> dropped
+    assert v([{**ok, "view_th": ""}], news) == []
+    assert v("junk", news) == [] and v(None, news) == []

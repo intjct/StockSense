@@ -108,6 +108,12 @@ def selftest() -> int:
         return f"hit {sm['hit']}"
     check("change-of-mind rules", rules_check)
 
+    def analyst_box():
+        b = Analyzer(src).run("NVDA", "buy")["analyst_box"]
+        assert b["summary"] and [p["name"] for p in b["people"]] == ["Jane Doe"], b
+        return f"{len(b['people'])} analyst from news"
+    check("analyst box", analyst_box)
+
     def update_check():
         from . import updater
         assert updater.is_newer("1.0.1", "1.0.0") and not updater.is_newer("0.0.1", VERSION)

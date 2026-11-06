@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QProgressBar, QV
 from . import theme
 from .. import portfolio_check as PC
 from ..scoring import part_tone
-from .widgets import (ExposureBars, MiniBars, PriceLine, Ring, baht, big_money, button, card, help_mark, label, money, pill, row,
+from .widgets import (Avatar, ExposureBars, MiniBars, PriceLine, Ring, baht, big_money, button, card, help_mark, label, money, pill, row,
                       signed_pct)
 
 DISCLAIMER = "ข้อมูลนี้ช่วยประกอบการตัดสินใจเท่านั้น ไม่ใช่คำแนะนำการลงทุน · % คือสัดส่วนสัญญาณที่บอกว่าน่าซื้อหรือน่าขาย ไม่ใช่โอกาสได้กำไร"
@@ -210,6 +210,9 @@ def build_trade(r: dict, prev: dict | None = None, on_add_holding=None, on_rules
     if r["kind"] == "buy" and r.get("fit"):
         _fit_section(page, r)
 
+    if r.get("analyst_box"):
+        _analyst_section(page, r["analyst_box"])
+
     # six parts
     grid = QGridLayout()
     grid.setSpacing(10)
@@ -259,6 +262,46 @@ def build_trade(r: dict, prev: dict | None = None, on_add_holding=None, on_rules
     _footer(page, r.get("missing") or [])
     page.addStretch(1)
     return w
+
+
+def _analyst_section(page: QVBoxLayout, box: dict):
+    """'นักวิเคราะห์พูดว่าอะไร': overall lean + named analysts found in real news (each with a link to open)."""
+    f, l = _section("นักวิเคราะห์พูดว่าอะไร",
+                    "สรุปรวมมาจากจำนวนนักวิเคราะห์ที่แนะนำซื้อ/ถือ/ขาย ส่วนรายคนหาจากข่าว 14 วันล่าสุด "
+                    "เครื่องหมายถูกสีเขียว = ชื่อและความเห็นนี้มาจากข่าวจริงที่กดเปิดดูได้ ไม่ได้บอกว่าใครแม่น และไม่ใช่คำแนะนำ")
+    sm = box.get("summary")
+    if sm:
+        tone = sm["tone"]
+        arrow = {"good": "▲", "bad": "▼"}.get(tone, "●")
+        txt = f"{arrow}  นักวิเคราะห์ส่วนใหญ่แนะนำ {sm['word']}   (ซื้อ {sm['buy']} · ถือ {sm['hold']} · ขาย {sm['sell']})"
+        lab = label(txt, 13, True, wrap=True)
+        bg, fg = theme.TONE_BG.get(tone, theme.SOFT), theme.TONE_FG.get(tone, theme.TEXT_SOFT)
+        lab.setStyleSheet(f"background:{bg.name()}; color:{fg.name()}; border-radius:10px; padding:10px 12px;")
+        l.addWidget(lab)
+    people = box.get("people") or []
+    stance = {"good": ("มองบวก", "good"), "bad": ("ระวัง", "mid"), "neutral": ("กลางๆ", "none")}
+    for p in people:
+        f2, l2 = card("SoftCard", margins=(12, 10, 12, 10), spacing=2)
+        top = QHBoxLayout()
+        top.setSpacing(12)
+        top.addWidget(Avatar(p["name"]), 0, Qt.AlignmentFlag.AlignTop)
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        t, tn = stance.get(p["stance"], ("กลางๆ", "none"))
+        col.addLayout(row(label(p["name"], 13, True), None, pill(t, tn, 11)))
+        sub = p["role"] + (f" · {p['firm']}" if p.get("firm") else "")
+        col.addWidget(label(sub, 12, name="Soft", wrap=True))
+        col.addWidget(label(p["view"], 13, wrap=True))
+        src = button(f"จากข่าว {p['source']} · {p['date']} ↗ เปิดข่าวต้นทาง", "Link", 11)
+        src.clicked.connect(lambda _=False, u=p["url"]: _open(u))
+        src.setEnabled(bool(p.get("url")))
+        col.addWidget(src, 0, Qt.AlignmentFlag.AlignLeft)
+        top.addLayout(col, 1)
+        l2.addLayout(top)
+        l.addWidget(f2)
+    if not people:
+        l.addWidget(label("ไม่พบความเห็นของนักวิเคราะห์รายชื่อในข่าวช่วงนี้", 13, name="Soft", wrap=True))
+    page.addWidget(f)
 
 
 def _rules_section(page: QVBoxLayout, r: dict, on_rules):

@@ -176,3 +176,15 @@ def test_rules_dialog_edit(app):
     d._save()
     out = d.result_rules
     assert [r["kind"] for r in out][-1] == "price_below" and out[-1]["value"] == 119.0 and len(out) == 4
+
+
+def test_analyst_section_draws(app, src):
+    from stocksense.analysis import Analyzer
+    from stocksense.ui import results as R
+    from stocksense.ui.widgets import Avatar
+    r = Analyzer(src).run("NVDA", "buy")
+    w = R.build_trade(r)
+    assert w.findChildren(Avatar) and len(w.findChildren(Avatar)) == len(r["analyst_box"]["people"])
+    box = {"summary": None, "people": []}
+    page = R.build_trade({**r, "analyst_box": box})
+    assert page is not None

@@ -193,6 +193,44 @@ class MiniBars(QWidget):
                 p.drawText(QRectF(lx, bottom + 2, 48, lab_h), Qt.AlignmentFlag.AlignCenter, self.labels[i])
 
 
+class Avatar(QWidget):
+    """Round initials badge with a small green check at the corner (= name came from a real, openable source)."""
+
+    def __init__(self, name: str, checked: bool = True, size: int = 44):
+        super().__init__()
+        words = [w for w in name.replace(".", " ").split() if w[:1].isalpha()]
+        self.text = (words[0][0] + words[-1][0]).upper() if len(words) > 1 else name[:2].upper()
+        self.checked, self.d = checked, size
+        self.setFixedSize(size + 6, size + 6)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        d = self.d
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor("#E2E3DC"))
+        p.drawEllipse(QRectF(0, 0, d, d))
+        p.setPen(QColor("#444444"))
+        p.setFont(theme.font(14, True))
+        p.drawText(QRectF(0, 0, d, d), Qt.AlignmentFlag.AlignCenter, self.text)
+        if self.checked:
+            r = 20
+            box = QRectF(d - r + 6, d - r + 6, r, r)
+            p.setPen(QPen(theme.SOFT, 2))
+            p.setBrush(QColor("#2F9E44"))
+            p.drawEllipse(box)
+            pen = QPen(QColor("#FFFFFF"), 2)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            p.setPen(pen)
+            c = box.center()
+            path = QPainterPath()
+            path.moveTo(c.x() - 4, c.y() + 0.5)
+            path.lineTo(c.x() - 1, c.y() + 3.5)
+            path.lineTo(c.x() + 4, c.y() - 3)
+            p.drawPath(path)
+
+
 class ExposureBars(QWidget):
     """Horizontal bars: [(name, pct, tone)] - how much of the portfolio sits in each bet."""
 

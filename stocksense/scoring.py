@@ -195,6 +195,23 @@ def analysts(recs: list[dict], target: dict | None, price: float) -> dict:
     return {"score": clamp(score, 8, 92), "facts": f}
 
 
+def analyst_box(facts: dict, people: list[dict]) -> dict | None:
+    """Data for the 'นักวิเคราะห์พูดว่าอะไร' box: the overall buy/hold/sell lean plus named analysts found in the news."""
+    summary = None
+    if facts and facts.get("analysts"):
+        b, h, s = facts["say_buy"], facts["say_hold"], facts["say_sell"]
+        if b > h + s:
+            word, tone = "ซื้อ", "good"
+        elif s > b:
+            word, tone = "ขาย", "bad"
+        else:
+            word, tone = "ถือ / ความเห็นแตกกัน", "mid"
+        summary = {"word": word, "tone": tone, "buy": b, "hold": h, "sell": s}
+    if summary is None and not people:
+        return None
+    return {"summary": summary, "people": people or []}
+
+
 # ---------------------------------------------------------------- news
 
 def news(classified: list[dict]) -> dict:

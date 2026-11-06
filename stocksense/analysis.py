@@ -88,22 +88,36 @@ class Analyzer:
                 "cik": cik, "missing": missing}
 
     def classify_news(self, sym: str, news: list[dict]) -> list[dict]:
+        return self.news_ai(sym, news)["news"]
+
+    def news_ai(self, sym: str, news: list[dict]) -> dict:
+        """One AI call: tag each news item good/bad/neutral AND pick out named analysts
+        quoted in the news. Names are kept only if they appear word-for-word in the news text."""
         if not news:
-            return []
-        key = "news-ai-" + sym + "-" + hashlib.sha1(json.dumps([n["headline"] for n in news]).encode()).hexdigest()[:10]
+            return {"news": [], "people": []}
+        key = "news-ai2-" + sym + "-" + hashlib.sha1(json.dumps([n["headline"] for n in news]).encode()).hexdigest()[:10]
         cached = self.src.cache.get(key, 2 * DAY)
-        if cached is not None:
+        if isinstance(cached, dict):
             return cached
         self.progress("AI กำลังแยกข่าวดีข่าวร้าย…")
         lines = "\n".join(f"[{i}] {n['date']} | {n['headline']} | {n['summary'][:300]}" for i, n in enumerate(news))
         prompt = f"""ข่าวของหุ้น {sym} ในช่วง 14 วัน แต่ละข่าวมีเลขกำกับ
 {RULES}
 
-งาน: บอกว่าแต่ละข่าว ดี (good) ร้าย (bad) หรือไม่ค่อยมีผล (neutral) ต่อราคาหุ้น {sym}
+งาน 1: บอกว่าแต่ละข่าว ดี (good) ร้าย (bad) หรือไม่ค่อยมีผล (neutral) ต่อราคาหุ้น {sym}
 และสรุปแต่ละข่าวเป็นภาษาไทย 1 บรรทัด (ไม่เกิน 20 คำ) ข่าวที่ไม่เกี่ยวกับบริษัทนี้โดยตรงให้เป็น neutral
 
+งาน 2: หา "นักวิเคราะห์ที่ถูกระบุชื่อบุคคลจริง" ในข่าว (เช่น analyst, strategist ของบริษัทหลักทรัพย์หรือธนาคาร)
+- เอาเฉพาะชื่อคนที่เขียนอยู่ในหัวข่าวหรือเนื้อข่าวย่อ ก๊อปชื่อและชื่อบริษัทมาตรงตัวอักษร ห้ามเดา ห้ามแต่งชื่อเอง
+- ไม่เอาผู้บริหารของ {sym} เอง ไม่เอาชื่อบริษัทหรือสถาบันที่ไม่มีชื่อคน
+- ถ้าไม่มีชื่อคนเลย ให้ analysts เป็น []
+- role_th = ตำแหน่งสั้นๆ เป็นภาษาไทยเท่าที่ข่าวบอก (ถ้าข่าวไม่บอกให้เขียนว่า นักวิเคราะห์)
+- stance = good (มองบวก) / bad (ระวังหรือมองลบ) / neutral
+- view_th = ความเห็นของเขาต่อ {sym} 1 บรรทัดภาษาไทย (ไม่เกิน 25 คำ) เอาเฉพาะที่ข่าวบอก
+
 รูปแบบ JSON:
-{{"news": [{{"i": 0, "effect": "good|bad|neutral", "line_th": "..."}}]}}
+{{"news": [{{"i": 0, "effect": "good|bad|neutral", "line_th": "..."}}],
+ "analysts": [{{"i": 0, "name": "...", "firm": "...", "role_th": "...", "stance": "good|bad|neutral", "view_th": "..."}}]}}
 
 ข่าว:
 {lines}"""
@@ -117,8 +131,43 @@ class Analyzer:
             if 0 <= i < len(news):
                 eff = row.get("effect") if row.get("effect") in ("good", "bad", "neutral") else "neutral"
                 out.append({**news[i], "effect": eff, "line_th": str(row.get("line_th") or news[i]["headline"])})
-        self.src.cache.put(key, out)
-        return out
+        people = self._verify_people(d.get("analysts"), news)
+        res = {"news": out, "people": people}
+        self.src.cache.put(key, res)
+        return res
+
+    @staticmethod
+    def _verify_people(rows, news: list[dict]) -> list[dict]:
+        """Keep an analyst only if the name really appears in that news item (guards against AI inventing people)."""
+        people, seen = [], set()
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            try:
+                i = int(row.get("i"))
+            except (TypeError, ValueError):
+                continue
+            name = str(row.get("name") or "").strip()
+            if not (0 <= i < len(news)) or len(name.split()) < 2 or len(name) < 5:
+                continue
+            text = (news[i]["headline"] + " " + news[i].get("summary", "")).lower()
+            if name.lower() not in text or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            firm = str(row.get("firm") or "").strip()
+            if firm and firm.lower() not in text:
+                firm = ""
+            stance = row.get("stance") if row.get("stance") in ("good", "bad", "neutral") else "neutral"
+            view = str(row.get("view_th") or "").strip()
+            if not view:
+                continue
+            n = news[i]
+            people.append({"name": name, "firm": firm, "role": str(row.get("role_th") or "นักวิเคราะห์").strip(),
+                           "stance": stance, "view": view, "date": n["date"], "url": n.get("url", ""),
+                           "source": n.get("source", "")})
+            if len(people) >= 3:
+                break
+        return people
 
     # ------------------------------------------------------------ buy / sell
     def run(self, sym: str, mode: str = "buy", holding: dict | None = None, fx: float | None = None,
@@ -126,9 +175,10 @@ class Analyzer:
         """holdings: the whole portfolio, so a buy result can say how the mix would change
         and a sell result can check the person's เงื่อนไขเปลี่ยนใจ (weight rule)."""
         g = self.gather(sym)
-        news = []
+        news, people = [], []
         try:
-            news = self.classify_news(g["sym"], g["news"])
+            ai = self.news_ai(g["sym"], g["news"])
+            news, people = ai["news"], ai["people"]
         except SourceError as e:
             if e.kind == "key":
                 raise
@@ -173,6 +223,8 @@ class Analyzer:
             "chart_closes": g["hist"]["closes"][-180:], "support": parts["chart"]["facts"].get("support"),
             "resistance": parts["chart"]["facts"].get("resistance"),
         }
+        if not g["is_etf"]:
+            result["analyst_box"] = S.analyst_box(parts["analysts"]["facts"], people)
         if mode == "buy" and holdings:
             result["fit"] = self.buy_fit(g["sym"], g["is_etf"], holdings)
         if mode == "sell" and holding:

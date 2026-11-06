@@ -56,7 +56,7 @@ NEWS = [
     ("NVIDIA beats estimates as data center sales jump", "Revenue rose sharply on AI chip demand."),
     ("New export rules could limit chip sales to China", "Regulators propose tighter limits."),
     ("NVIDIA announces new partnership with major cloud provider", "Multi-year deal."),
-    ("Analysts raise targets after strong quarter", "Several brokers lift price targets."),
+    ("Analysts raise targets after strong quarter", "Several brokers lift price targets. Jane Doe of Example Securities said AI chip demand remains strong."),
     ("Stock market rallies broadly on rate hopes", "Indexes up."),
 ]
 
@@ -69,7 +69,11 @@ def _gemini(prompt: str) -> dict:
     if '"news": [' in prompt and "line_th" in prompt and "ข่าว:" in prompt:
         n = sum(1 for ln in prompt.split("ข่าว:")[-1].splitlines() if ln.startswith("["))
         eff = ["good", "bad", "good", "good", "neutral"]
-        out = {"news": [{"i": i, "effect": eff[i % 5], "line_th": TH_NEWS[i % 5]} for i in range(n)]}
+        out = {"news": [{"i": i, "effect": eff[i % 5], "line_th": TH_NEWS[i % 5]} for i in range(n)],
+               "analysts": [{"i": 3, "name": "Jane Doe", "firm": "Example Securities", "role_th": "นักวิเคราะห์อาวุโส",
+                             "stance": "good", "view_th": "มองว่าความต้องการชิป AI ยังแข็งแรง"},
+                            {"i": 3, "name": "Made Up Person", "firm": "Nowhere", "role_th": "นักวิเคราะห์",
+                             "stance": "good", "view_th": "ชื่อนี้ไม่มีในข่าว ต้องถูกตัดทิ้ง"}]}
     elif "ผลตรวจพอร์ต" in prompt:
         out = {"headline": "พอร์ตของคุณค่อนข้างแข็งแรง แต่ NVDA มีน้ำหนักค่อนข้างมาก และยังซ้อนอยู่ในกองทุนอีกชั้น",
                "watch": ["NVDA เป็นสัดส่วนใหญ่ของพอร์ต ถ้าตกแรงพอร์ตจะได้รับผลมาก",
