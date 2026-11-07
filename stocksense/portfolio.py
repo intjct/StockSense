@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+import os
+import uuid
 
 from . import rules as RL
-from .settings import read_json, write_json
+from .settings import config_dir, read_json, write_json
 
 
 class Portfolio:
@@ -42,20 +45,65 @@ class Portfolio:
 
 
 class History:
-    """Every finished analysis: kind, ticker, score, price, time. Newest first, capped."""
-    LIMIT = 300
+    """Every finished buy/sell analysis. Newest first. Each one also keeps its FULL result in a small file
+    (history/<id>.json) so it can be opened again later without asking any website or AI."""
+    LIMIT = 300        # rows kept in history.json
+    FULL_LIMIT = 80    # full results kept on disk
 
     def __init__(self):
         rows = read_json("history.json", [])
         self.rows: list[dict] = rows if isinstance(rows, list) else []
 
-    def add(self, r: dict) -> None:
+    @staticmethod
+    def _full_path(rid: str) -> str:
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in rid)
+        return os.path.join(config_dir(), "history", safe + ".json")
+
+    def add(self, r: dict) -> str | None:
         if r.get("kind") not in ("buy", "sell"):
-            return
-        self.rows.insert(0, {"kind": r["kind"], "sym": r["sym"], "score": r["score"], "label": r["label"],
+            return None
+        rid = f"{r['sym']}-{r['kind']}-" + "".join(c for c in str(r.get("at", "")) if c.isdigit()) + "-" + uuid.uuid4().hex[:6]
+        self.rows.insert(0, {"id": rid, "kind": r["kind"], "sym": r["sym"], "name": r.get("name") or r["sym"],
+                             "score": r["score"], "label": r["label"], "tone": r.get("tone", "none"),
                              "price": r["price"], "at": r["at"]})
-        del self.rows[self.LIMIT:]
+        try:
+            write_json(os.path.join("history", os.path.basename(self._full_path(rid))), r)
+        except (OSError, TypeError, ValueError):
+            pass                                                           # the summary row is still saved
+        self._prune()
         write_json("history.json", self.rows)
+        return rid
+
+    def _prune(self) -> None:
+        for x in self.rows[self.FULL_LIMIT:]:
+            try:
+                os.remove(self._full_path(x["id"]))
+            except (OSError, KeyError):
+                pass
+        del self.rows[self.LIMIT:]
+
+    def full(self, rid: str | None) -> dict | None:
+        if not rid:
+            return None
+        try:
+            with open(self._full_path(rid), encoding="utf-8") as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else None
+        except (OSError, ValueError):
+            return None
+
+    def entries(self, limit: int = 40) -> list[dict]:
+        """Newest first, one row per (ticker, kind): the latest. `has_full` says whether it can be reopened."""
+        seen, out = set(), []
+        for x in self.rows:
+            k = (x["sym"], x["kind"])
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append({**x, "has_full": bool(x.get("id")) and os.path.exists(self._full_path(x["id"]))})
+            if len(out) >= limit:
+                break
+        return out
 
     def previous(self, sym: str, kind: str, skip_first: bool = True) -> dict | None:
         found = [r for r in self.rows if r["sym"] == sym and r["kind"] == kind]

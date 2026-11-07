@@ -301,3 +301,69 @@ def test_sec_block_stops_further_requests_and_survives_restart():
     with pytest.raises(SourceError):                              # other sources are not held back
         h.get_json("yahoo", "https://example.com")
     assert len(calls) == 2
+
+
+def _gem(net):
+    return sum(1 for u in net.calls if "generativelanguage" in u)
+
+
+def test_history_full_result_roundtrip_and_prune():
+    from stocksense.portfolio import History
+    h = History()
+    h.FULL_LIMIT = 2
+    ids = []
+    for sym in ("AAA", "BBB", "CCC"):
+        ids.append(h.add({"kind": "buy", "sym": sym, "name": sym + " Inc", "score": 60, "label": "ก้ำกึ่ง",
+                          "price": 10, "at": "2026-11-07 10:00", "cards": [{"key": "x"}]}))
+    assert h.full(ids[2])["sym"] == "CCC" and h.full(ids[1])["cards"] == [{"key": "x"}]
+    assert h.full(ids[0]) is None                                   # oldest full file was pruned
+    es = {e["sym"]: e for e in History().entries()}
+    assert es["CCC"]["has_full"] and not es["AAA"]["has_full"]      # still listed, but only as a score
+    assert History().entries()[0]["sym"] == "CCC"
+
+
+def test_history_one_row_per_ticker_and_kind():
+    from stocksense.portfolio import History
+    h = History()
+    for sc in (50, 60):
+        h.add({"kind": "buy", "sym": "AAA", "score": sc, "label": "x", "price": 1, "at": "2026-11-07 10:0%d" % (sc // 60)})
+    h.add({"kind": "sell", "sym": "AAA", "score": 30, "label": "y", "price": 1, "at": "2026-11-07 10:05"})
+    es = h.entries()
+    assert [(e["sym"], e["kind"]) for e in es] == [("AAA", "sell"), ("AAA", "buy")] and es[1]["score"] == 60
+
+
+def test_compare_uses_saved_results_and_caches_ai(src):
+    import copy
+    a = Analyzer(src).run("NVDA", "buy")
+    b = copy.deepcopy(a)
+    b["sym"], b["name"], b["score"] = "AMD", "AMD Inc", a["score"] - 20
+    for c in b["cards"]:
+        c["score"] = max(0, c["score"] - 20)
+    before, gem0 = len(src.net.calls), _gem(src.net)
+    c1 = Analyzer(src).compare(a, b)
+    assert c1["leader"] == "a" and c1["gap"] == 20 and c1["ai_ok"] and len(c1["rows"]) == 6
+    assert _gem(src.net) == gem0 + 1 and len(src.net.calls) == before + 1   # only the one AI call, no website data
+    c2 = Analyzer(src).compare(a, b)
+    assert c2["ai_ok"] and len(src.net.calls) == before + 1          # same pair again: nothing asked at all
+    b["score"] = a["score"] - 3
+    assert Analyzer(src).compare(a, b, ai=False)["leader"] == "tie"
+    assert "คีย์" in Analyzer(src).compare(a, b, ai=False)["ai_error"]
+
+
+def test_compare_ai_failure_still_gives_table(src):
+    import copy
+    a = Analyzer(src).run("NVDA", "buy")
+    b = copy.deepcopy(a)
+    b["sym"], b["score"] = "AMD", a["score"] - 10
+    src.net.gemini_status = 500
+    c = Analyzer(src).compare(a, b)
+    assert not c["ai_ok"] and c["ai_error"] and c["leader"] == "a" and c["rows"]
+
+
+def test_age_text():
+    import datetime as dt
+    from stocksense.ui.history import age_days, age_text
+    now = dt.datetime(2026, 11, 7, 15, 0)
+    assert age_text("2026-11-07 09:00", now) == "วันนี้" and age_text("2026-11-06 23:00", now) == "เมื่อวาน"
+    assert age_text("2026-11-02 10:00", now) == "5 วันก่อน" and age_days("2026-11-02 10:00", now) == 5
+    assert age_text("garbage", now) == "garbage" and age_days("garbage", now) == 0

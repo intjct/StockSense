@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QProgressBar, QV
 from . import theme
 from .. import portfolio_check as PC
 from ..scoring import part_tone
+from .history import age_days, age_text
 from .widgets import (Avatar, ExposureBars, MiniBars, PriceLine, Ring, baht, big_money, button, card, help_mark, label, money, pill, row,
                       signed_pct)
 
@@ -672,5 +673,132 @@ def build_error(text: str, is_key: bool, on_settings, on_retry) -> QWidget:
     b1 = button("ไปที่ตั้งค่า", "Lime", 13, True) if is_key else button("ลองใหม่", "Dark", 13)
     b1.clicked.connect(on_settings if is_key else on_retry)
     page.addLayout(row(b1, None))
+    page.addStretch(1)
+    return w
+
+
+def build_old_banner(r: dict, on_rerun) -> QFrame:
+    """Shown above a result opened from history, so nobody mistakes it for fresh data."""
+    f = QFrame()
+    f.setObjectName("OldBanner")
+    f.setStyleSheet(f"QFrame#OldBanner {{ background:{theme.TONE_BG['mid'].name()}; border-radius:10px; }}")
+    l = QHBoxLayout(f)
+    l.setContentsMargins(14, 10, 12, 10)
+    t = label(f"นี่คือผลที่เคยวิเคราะห์ไว้เมื่อ {age_text(r['at'])} ({r['at']}) ราคาตอนนั้น {money(r['price'])} "
+              "ราคาและข่าวอาจเปลี่ยนไปแล้ว", 12, wrap=True)
+    t.setStyleSheet(f"color:{theme.MID.name()}; background: transparent;")
+    l.addWidget(t, 1)
+    b = button("วิเคราะห์ใหม่", "Dark", 12, True)
+    b.clicked.connect(on_rerun)
+    l.addWidget(b)
+    return f
+
+
+def build_note(title: str, text: str, btn: str, on_click) -> QWidget:
+    w = QWidget()
+    w.setObjectName("Page")
+    page = QVBoxLayout(w)
+    page.setContentsMargins(0, 30, 0, 0)
+    page.setSpacing(12)
+    page.addWidget(label(title, 18, True))
+    page.addWidget(label(text, 14, name="Soft", wrap=True))
+    b = button(btn, "Dark", 13, True)
+    b.clicked.connect(on_click)
+    page.addLayout(row(b, None))
+    page.addStretch(1)
+    return w
+
+
+def _side_card(r: dict, tone_leader: bool, on_open) -> QFrame:
+    f, l = card("Card", margins=(16, 14, 16, 14), spacing=4)
+    if tone_leader:
+        f.setStyleSheet(f"QFrame#Card {{ background:{theme.BG.name()}; border:2px solid {theme.LIME.name()}; border-radius:12px; }}")
+    l.addLayout(row(label(r["sym"], 18, True), None, pill(r["label"], r.get("tone", "none"), 12)))
+    l.addWidget(label(r.get("name") or r["sym"], 12, name="Soft", wrap=True))
+    big = label(f"{r['score']}%", 30, True)
+    l.addWidget(big)
+    l.addWidget(label(f"ราคา {money(r['price'])} · วิเคราะห์ {age_text(r['at'])}", 12, name="Soft"))
+    l.addWidget(label(r.get("headline") or "", 12, wrap=True))
+    b = button("เปิดผลเต็ม", "Outline", 12)
+    b.clicked.connect(on_open)
+    l.addWidget(b)
+    return f
+
+
+def build_compare(c: dict, on_open_a, on_open_b, on_retry_ai=None) -> QWidget:
+    w = QWidget()
+    w.setObjectName("Page")
+    page = QVBoxLayout(w)
+    page.setContentsMargins(0, 6, 0, 24)
+    page.setSpacing(12)
+    a, b, leader = c["a"], c["b"], c["leader"]
+    page.addWidget(label("เปรียบเทียบหุ้น 2 ตัว", 18, True))
+    if leader == "tie":
+        head, tone = f"{a['sym']} กับ {b['sym']} คะแนนสูสีกัน (ต่างกันไม่ถึง 5 คะแนน)", "mid"
+    else:
+        win = a if leader == "a" else b
+        lose = b if leader == "a" else a
+        head, tone = f"{win['sym']} น่าสนใจกว่า {lose['sym']} ในแง่น่าซื้อ (คะแนนต่างกัน {abs(c['gap'])} จุด)", "good"
+    t = label(head, 14, True, wrap=True)
+    t.setStyleSheet(f"background:{theme.TONE_BG[tone].name()}; color:{theme.TONE_FG[tone].name()}; "
+                    "border-radius:10px; padding:10px 12px;")
+    page.addWidget(t)
+    g = QGridLayout()
+    g.setSpacing(12)
+    g.addWidget(_side_card(a, leader == "a", on_open_a), 0, 0)
+    g.addWidget(_side_card(b, leader == "b", on_open_b), 0, 1)
+    page.addLayout(g)
+
+    old = [x for x in (a, b) if age_days(x["at"]) >= 2]
+    if old:
+        n = label("ผลของ " + " และ ".join(x["sym"] for x in old) + " วิเคราะห์ไว้นานแล้ว ราคาและข่าวอาจเปลี่ยนไป "
+                  "ถ้าอยากได้ข้อมูลสด เปิดผลเต็มแล้วกด “วิเคราะห์ใหม่”", 12, name="Soft", wrap=True)
+        page.addWidget(n)
+
+    f, l = _section("เทียบทีละเรื่อง", "คะแนนเต็ม 100 ตัวหนาสีเขียว = ตัวที่ได้คะแนนมากกว่าในเรื่องนั้น")
+    grid = QGridLayout()
+    grid.setHorizontalSpacing(12)
+    grid.setVerticalSpacing(8)
+    grid.addWidget(label("", 11), 0, 0)
+    grid.addWidget(label(a["sym"], 12, True), 0, 1)
+    grid.addWidget(label(b["sym"], 12, True), 0, 2)
+    for i, r in enumerate(c["rows"], start=1):
+        grid.addWidget(label(r["title"], 13, wrap=True), i, 0)
+        for col, (me, other, short) in ((1, (r["a"], r["b"], r["a_short"])), (2, (r["b"], r["a"], r["b_short"]))):
+            win = me is not None and other is not None and me > other
+            cell = QVBoxLayout()
+            cell.setContentsMargins(0, 0, 0, 0)
+            cell.setSpacing(0)
+            sc = label("-" if me is None else f"{me}/100", 13, win)
+            if win:
+                sc.setStyleSheet(f"color:{theme.GOOD.name()}; background: transparent;")
+            cell.addWidget(sc)
+            cell.addWidget(label(short, 11, name="Soft", wrap=True))
+            holder = QWidget()
+            holder.setLayout(cell)
+            grid.addWidget(holder, i, col)
+    grid.setColumnStretch(0, 2)
+    grid.setColumnStretch(1, 3)
+    grid.setColumnStretch(2, 3)
+    l.addLayout(grid)
+    page.addWidget(f)
+
+    f2, l2 = _section("AI สรุปให้", "AI อธิบายจากตัวเลขที่เก็บไว้แล้วเท่านั้น ไม่ได้ดึงข้อมูลใหม่ และเปลี่ยนผลคะแนนไม่ได้")
+    if c.get("ai_ok"):
+        ai = c["ai"]
+        l2.addWidget(label(ai["summary_th"], 13, wrap=True))
+        for sym, key in ((a["sym"], "a_good_th"), (b["sym"], "b_good_th")):
+            for x in ai.get(key) or []:
+                l2.addWidget(label(f"•  {sym}: {x}", 12, wrap=True))
+        if ai.get("caution_th"):
+            l2.addWidget(label(ai["caution_th"], 12, name="Soft", wrap=True))
+    else:
+        l2.addWidget(label(c.get("ai_error") or "AI สรุปให้ไม่ได้ตอนนี้", 13, name="Danger", wrap=True))
+        if on_retry_ai:
+            rb = button("ลองให้ AI สรุปอีกครั้ง", "Dark", 12)
+            rb.clicked.connect(on_retry_ai)
+            l2.addLayout(row(rb, None))
+    page.addWidget(f2)
+    page.addWidget(label(DISCLAIMER, 11, name="Soft", wrap=True))
     page.addStretch(1)
     return w

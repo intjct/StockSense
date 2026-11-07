@@ -188,3 +188,69 @@ def test_analyst_section_draws(app, src):
     box = {"summary": None, "people": []}
     page = R.build_trade({**r, "analyst_box": box})
     assert page is not None
+
+
+def _win_net():
+    from stocksense.ui.mainwindow import MainWindow
+    net = FakeInternet()
+    s = Settings()
+    s.gemini_key, s.finnhub_key = "g", "f"
+    pf = Portfolio()
+    pf.upsert({"ticker": "NVDA", "shares": 3, "avg_price": 100, "reason": "AI"})
+    return MainWindow(s, pf, History(), http=Http(net), check_updates=False), net
+
+
+def test_history_panel_opens_old_result_without_any_request(app):
+    from PySide6.QtWidgets import QFrame
+    w, net = _win_net()
+    w.show()
+    w.search.setText("NVDA")
+    w.b_buy.click()
+    _wait(app, lambda: not w.busy)
+    w.toggle_history()
+    assert w.hist_panel.isVisible() and w.b_hist.text() == "ปิดประวัติ"
+    assert len(w.hist_panel.rows) == 1 and w.hist_panel.rows[0].e["sym"] == "NVDA"
+    _wait(app, lambda: not w.busy)
+    n = len(net.calls)
+    w.open_history(w.hist_panel.rows[0].e)
+    app.processEvents()
+    assert len(net.calls) == n                                       # nothing downloaded, no AI
+    assert w.body.findChild(QFrame, "OldBanner") is not None
+    w.toggle_history()
+    assert not w.hist_panel.isVisible()
+
+
+def test_history_row_without_full_result_explains(app):
+    w, net = _win_net()
+    w.hist.rows.insert(0, {"kind": "buy", "sym": "OLD", "name": "Old Co", "score": 55, "label": "ก้ำกึ่ง",
+                           "tone": "mid", "price": 5, "at": "2026-11-01 10:00"})
+    w.hist_panel.refresh()
+    assert w.hist_panel.rows[0].check is None                        # can't compare a score-only row
+    w.open_history(w.hist_panel.rows[0].e)
+    assert not net.calls or all("OLD" not in u for u in net.calls)
+
+
+def test_compare_two_saved_analyses(app):
+    import copy
+    w, net = _win_net()
+    w.show()
+    w.search.setText("NVDA")
+    w.b_buy.click()
+    _wait(app, lambda: not w.busy)
+    a = w.last
+    b = copy.deepcopy(a)
+    b["sym"], b["name"], b["score"], b["at"] = "AMD", "AMD Inc", a["score"] - 20, "2026-11-01 09:00"
+    w.hist.add(b)
+    w.hist_panel.refresh()
+    checks = [r for r in w.hist_panel.rows if r.check is not None]
+    assert len(checks) == 2
+    checks[0].check.setChecked(True)
+    assert "อีก 1 ตัว" in w.hist_panel.hint.text()
+    checks[1].check.setChecked(True)
+    assert "เปรียบเทียบได้เลย" in w.hist_panel.hint.text()
+    n = len(net.calls)
+    w.hist_panel.b_cmp.click()
+    _wait(app, lambda: not w.busy)
+    assert w.last_kind == "compare" and w.last["leader"] in ("a", "b")
+    assert len(net.calls) - n == 1                                   # exactly one AI call
+    assert w.last["ai_ok"]

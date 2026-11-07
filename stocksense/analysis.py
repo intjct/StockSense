@@ -42,6 +42,14 @@ def _money(v) -> str:
     return f"{sign}${a:,.0f}"
 
 
+def _brief(r: dict) -> dict:
+    return {k: r.get(k) for k in ("sym", "name", "score", "label", "tone", "price", "at", "headline", "is_etf")}
+
+
+def _strs(v) -> list[str]:
+    return [str(x).strip() for x in v if str(x).strip()][:3] if isinstance(v, list) else []
+
+
 class Analyzer:
     def __init__(self, src: Sources, progress=None):
         self.src = src
@@ -168,6 +176,74 @@ class Analyzer:
             if len(people) >= 3:
                 break
         return people
+
+    # ------------------------------------------------------------ compare
+    TIE_GAP = 5
+
+    def compare(self, a: dict, b: dict, ai: bool = True) -> dict:
+        """Side-by-side of two finished BUY analyses taken from history. Nothing is downloaded; only the
+        written explanation comes from one AI call (cached per pair). The leader is decided by the scores, not by AI."""
+        gap = a["score"] - b["score"]
+        leader = "tie" if abs(gap) < self.TIE_GAP else ("a" if gap > 0 else "b")
+        cb = {c["key"]: c for c in b.get("cards", [])}
+        rows = []
+        for c in a.get("cards", []):
+            o = cb.get(c["key"])
+            rows.append({"key": c["key"], "title": c["title"], "a": c["score"], "b": o["score"] if o else None,
+                         "a_short": c.get("short", ""), "b_short": (o or {}).get("short", "")})
+        out = {"kind": "compare", "a": _brief(a), "b": _brief(b), "gap": gap, "leader": leader, "rows": rows,
+               "ai": {}, "ai_ok": False, "ai_error": ""}
+        if not ai:
+            out["ai_error"] = "ต้องใส่คีย์ Gemini ในหน้าตั้งค่าก่อน ถึงจะให้ AI สรุปให้ได้"
+            return out
+        key = "cmp-" + hashlib.sha1(f"{a['sym']}|{a['at']}|{b['sym']}|{b['at']}".encode()).hexdigest()[:16]
+        cached = self.src.cache.get(key, 30 * DAY)
+        if isinstance(cached, dict) and cached.get("summary_th"):
+            out["ai"], out["ai_ok"] = cached, True
+            return out
+        self.progress("AI กำลังเทียบให้ 2 ตัว…")
+        try:
+            d = self.src.ask_ai(self._compare_prompt(a, b, leader))
+        except SourceError as e:
+            out["ai_error"] = e.th
+            return out
+        res = {"summary_th": str(d.get("summary_th") or "").strip(),
+               "a_good_th": _strs(d.get("a_good_th")), "b_good_th": _strs(d.get("b_good_th")),
+               "caution_th": str(d.get("caution_th") or "").strip()}
+        if not res["summary_th"]:
+            out["ai_error"] = "AI ตอบกลับมาไม่ครบ ลองกดเปรียบเทียบอีกครั้ง"
+            return out
+        self.src.cache.put(key, res)
+        out["ai"], out["ai_ok"] = res, True
+        return out
+
+    @staticmethod
+    def _compare_prompt(a: dict, b: dict, leader: str) -> str:
+        def block(tag, r):
+            lines = [f"{tag} = {r['sym']} ({r['name']}) คะแนนน่าซื้อ {r['score']}% ({r['label']}) ราคา ${r['price']} วิเคราะห์เมื่อ {r['at']}",
+                     f"  สรุปเดิม: {r.get('headline', '')}"]
+            for c in r.get("cards", []):
+                lines.append(f"  - {c['title']}: {c['score']}/100 · {c.get('short', '')}")
+            box = (r.get("analyst_box") or {}).get("summary")
+            if box:
+                lines.append(f"  - นักวิเคราะห์รวม: ส่วนใหญ่แนะนำ {box['word']} (ซื้อ {box['buy']} ถือ {box['hold']} ขาย {box['sell']})")
+            return "\n".join(lines)
+        who = {"a": f"A ({a['sym']}) ได้คะแนนสูงกว่า", "b": f"B ({b['sym']}) ได้คะแนนสูงกว่า",
+               "tie": "คะแนนสูสีกัน (ต่างกันไม่ถึง 5 คะแนน)"}[leader]
+        return f"""เปรียบเทียบหุ้น 2 ตัวจากผลวิเคราะห์ที่ทำไว้แล้ว เพื่อบอกว่าตัวไหนน่าสนใจกว่าในแง่ "น่าซื้อ"
+{RULES}
+- ผลตัดสินจากคะแนนถูกกำหนดแล้ว: {who} ห้ามเปลี่ยนผล ให้อธิบายเหตุผลตามตัวเลขที่ให้เท่านั้น
+- ถ้าวิเคราะห์ไว้คนละวัน ราคาอาจเปลี่ยนไปแล้ว ให้เตือนสั้นๆ
+
+{block('A', a)}
+
+{block('B', b)}
+
+ตอบเป็น JSON:
+{{"summary_th": "สรุป 2-3 ประโยคว่าตัวไหนน่าสนใจกว่าหรือสูสี เพราะอะไร",
+ "a_good_th": ["จุดเด่นของ A สั้นๆ ไม่เกิน 3 ข้อ"],
+ "b_good_th": ["จุดเด่นของ B สั้นๆ ไม่เกิน 3 ข้อ"],
+ "caution_th": "ข้อควรระวังเวลาเทียบ 2 ตัวนี้ 1 ประโยค (เช่น คะแนนสูงกว่าไม่ได้แปลว่ากำไรมากกว่า)"}}"""
 
     # ------------------------------------------------------------ buy / sell
     def run(self, sym: str, mode: str = "buy", holding: dict | None = None, fx: float | None = None,

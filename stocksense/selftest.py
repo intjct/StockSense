@@ -156,6 +156,19 @@ def selftest() -> int:
         return f"price {w.prices.get('NVDA')}"
     check("window draws", window)
 
+    def history_compare():
+        from .portfolio import History
+        h = History()
+        if "buy" not in res:
+            return "skipped"
+        rid = h.add(res["buy"])
+        full = h.full(rid)
+        assert full and full.get("sym") == res["buy"].get("sym"), "history did not keep full result"
+        c = Analyzer(Http(FakeInternet())).compare(full, full, ai=False)
+        assert c.get("kind") == "compare" and c.get("rows"), "compare empty"
+        return f"{len(c['rows'])} rows"
+    check("history + compare", history_compare)
+
     lines.append("RESULT " + ("OK" if ok else "FAILED"))
     with open(out_file, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))

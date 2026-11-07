@@ -10,6 +10,7 @@ from ..analysis import Analyzer
 from ..net import Cache, Http, SourceError
 from .. import rules as RL
 from ..portfolio import History, Portfolio
+from .history import HistoryPanel
 from ..sources import ALIASES, ETFS, Sources
 from . import results as R
 from . import theme
@@ -123,6 +124,9 @@ class MainWindow(QWidget):
         self.b_sell = button("วิเคราะห์ขาย", "Dark", 14)
         self.b_stmt = button("วิเคราะห์งบล่าสุด", "Outline", 14)
         self.b_port = button("ตรวจพอร์ต", "Outline", 14)
+        self.b_hist = button("ประวัติ", "Outline", 14)
+        self.b_hist.setMinimumHeight(44)
+        self.b_hist.clicked.connect(self.toggle_history)
         for b, kind in ((self.b_buy, "buy"), (self.b_sell, "sell"), (self.b_stmt, "statement"), (self.b_port, "portfolio")):
             b.setMinimumHeight(44)
             b.clicked.connect(lambda _=False, k=kind: self.run(k))
@@ -130,6 +134,7 @@ class MainWindow(QWidget):
         bl.setSpacing(8)
         for b in (self.b_buy, self.b_sell, self.b_stmt, self.b_port):
             bl.addWidget(b, 1)
+        bl.addWidget(self.b_hist)
         rl.addLayout(bl)
 
         self.scroll = QScrollArea()
@@ -142,6 +147,9 @@ class MainWindow(QWidget):
         self.scroll.setWidget(self.body)
         rl.addWidget(self.scroll, 1)
         outer.addWidget(right, 1)
+        self.hist_panel = HistoryPanel(self.hist, self.open_history, self.compare)
+        self.hist_panel.hide()
+        outer.addWidget(self.hist_panel)
 
         self._fill_names({})
         self.show_empty()
@@ -513,6 +521,70 @@ class MainWindow(QWidget):
             self.show_result(res)
         run_in_background(work, done, loading.set_step)
 
+    # ------------------------------------------------------------ history + compare
+    def toggle_history(self):
+        show = not self.hist_panel.isVisible()
+        if show:
+            self.hist_panel.refresh()
+        self.hist_panel.setVisible(show)
+        self.b_hist.setText("ปิดประวัติ" if show else "ประวัติ")
+        if not self.isMaximized():                      # keep the analysis area the same width
+            w = self.hist_panel.width()
+            self.resize(max(self.minimumWidth(), self.width() + (w if show else -w)), self.height())
+
+    def open_history(self, e: dict):
+        """Re-opens a finished analysis from disk. No website or AI is called."""
+        res = self.hist.full(e.get("id"))
+        sym, kind = e["sym"], e["kind"]
+
+        def again():
+            self.search.setText(sym)
+            self.run(kind)
+        if res is None:
+            self._set_page(R.build_note(
+                f"{sym} · ผลเดิมเปิดไม่ได้", f"ผลวิเคราะห์{ 'ซื้อ' if kind == 'buy' else 'ขาย' }นี้ถูกบันทึกก่อนมีระบบประวัติแบบเต็ม "
+                f"เหลือแค่คะแนน {e['score']}% ({e['label']}) ถ้าอยากดูรายละเอียดต้องวิเคราะห์ใหม่",
+                "วิเคราะห์ใหม่", again))
+            return
+        self.last, self.last_kind = res, kind
+        page = R.build_trade(res, None, self.add_holding, self.edit_rules)
+        box = QWidget()
+        box.setObjectName("Page")
+        bl = QVBoxLayout(box)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(10)
+        bl.addWidget(R.build_old_banner(res, again))
+        bl.addWidget(page)
+        self._set_page(box)
+
+    def compare(self, ea: dict, eb: dict):
+        a, b = self.hist.full(ea.get("id")), self.hist.full(eb.get("id"))
+        if a is None or b is None:
+            self._set_page(R.build_note("เปรียบเทียบไม่ได้", "ผลของหุ้นตัวใดตัวหนึ่งถูกบันทึกก่อนมีระบบประวัติแบบเต็ม "
+                                        "วิเคราะห์ซื้อตัวนั้นใหม่อีกครั้งก่อน แล้วค่อยเปรียบเทียบ", "ตกลง", self.show_empty))
+            return
+        if self.busy:
+            return
+        use_ai = self.s.gemini_key != ""
+        loading = R.Loading(f"กำลังเปรียบเทียบ {a['sym']} กับ {b['sym']}", "ใช้ผลที่เก็บไว้แล้ว ไม่ดึงข้อมูลใหม่")
+        self._set_page(loading)
+        self._set_busy(True)
+        src = self._sources()
+
+        def work(progress):
+            return Analyzer(src, progress).compare(a, b, ai=use_ai)
+
+        def done(res, err):
+            self._set_busy(False)
+            if err is not None:
+                self._set_page(R.build_error(err.th if isinstance(err, SourceError) else "เปรียบเทียบไม่สำเร็จ ลองใหม่อีกครั้ง",
+                                             False, self.open_settings, lambda: self.compare(ea, eb)))
+                return
+            self.last, self.last_kind = res, "compare"
+            self._set_page(R.build_compare(res, lambda: self.open_history(ea), lambda: self.open_history(eb),
+                                           lambda: self.compare(ea, eb)))
+        run_in_background(work, done, loading.set_step)
+
     def _open_sell(self, ticker: str):
         self.select(ticker)
         self.run("sell")
@@ -530,6 +602,7 @@ class MainWindow(QWidget):
             self._set_page(R.build_portfolio(res, self._open_sell))
             return
         self.hist.add(res)
+        self.hist_panel.refresh()
         prev = self.hist.previous(res["sym"], res["kind"])
         if res["sym"] in {h["ticker"] for h in self.pf.holdings}:
             self.prices[res["sym"]] = res["price"]

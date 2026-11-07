@@ -102,6 +102,7 @@ def clear(layout) -> None:
         it = layout.takeAt(0)
         w = it.widget()
         if w is not None:
+            w.hide()                      # gone from the screen at once, freed when Qt next gets a chance
             w.deleteLater()
         elif it.layout() is not None:
             clear(it.layout())
